@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stock Deep-Dive</title>
+<link rel="stylesheet" href="/static/styles.css">
+<script src="https://cdn.jsdelivr.net/npm/plotly.js-dist-min@2.35.2/plotly.min.js"></script>
+</head>
+<body>
+<header class="top">
+  <div class="wrap bar">
+    <h1>Stock Deep-Dive <span class="sub">bull &amp; bear case</span></h1>
+    <form id="form" autocomplete="off">
+      <input id="symbol" placeholder="AAPL.US, 700.HK, 600519.SH" aria-label="Symbol" spellcheck="false">
+      <button type="submit">Analyze</button>
+    </form>
+  </div>
+</header>
+<main class="wrap">
+  <div id="status" class="status">Enter a symbol in CODE.MARKET format (US, HK, SH, SZ, SG).</div>
+  <div id="mode"></div>
+  <section id="header"></section>
+  <section id="recon"></section>
+  <section id="quality"></section>
+  <section id="valuation"></section>
+  <section id="thesis"></section>
+  <section id="metrics"></section>
+  <section id="chartsec" hidden>
+    <h2>Price chart</h2>
+    <div class="ranges" id="ranges">
+      <button data-r="6m">6M</button><button data-r="1y" class="on">1Y</button>
+      <button data-r="2y">2Y</button><button data-r="5y">5Y</button>
+    </div>
+    <div id="chart" class="chart"></div>
+    <div id="chartsig" class="note"></div>
+  </section>
+  <section id="flows"></section>
+  <section id="options"></section>
+  <section id="news"></section>
+  <section id="sources"></section>
+  <footer class="disc">For reference only. Not investment advice. Make investment decisions independently, based on your own risk tolerance. <span class="build">UI build __BUILD__</span></footer>
+</main>
+<script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "skills": {
+    "longbridge": {
+      "source": "longbridge/skills",
+      "sourceType": "github",
+      "skillPath": "skills/longbridge/SKILL.md",
+      "computedHash": "0dff553e36989501f0baa1692ecb849e7a2c5cc71fa433931a84369601f85d5a"
+    },
+    "longbridge-derivatives": {
+      "source": "longbridge/skills",
+      "sourceType": "github",
+      "skillPath": "skills/longbridge-derivatives/SKILL.md",
+      "computedHash": "a54334d241ef86461097971b39d19c475d8d67fd4500969cc590f80b3ba3b929"
+    },
+    "longbridge-quant": {
+      "source": "longbridge/skills",
+      "sourceType": "github",
+      "skillPath": "skills/longbridge-quant/SKILL.md",
+      "computedHash": "2121eff6b5a47cc99a48b0d98a01dfa22bdc6b4c65c37ee922cac67868db97de"
+    },
+    "longbridge-value-investing": {
+      "source": "longbridge/skills",
+      "sourceType": "github",
+      "skillPath": "skills/longbridge-value-investing/SKILL.md",
+      "computedHash": "94b843dca526c69d56b3b0ef521f272c1e3e2740445163cdd9307ebe9e704660"
+    }
+  }
+}
