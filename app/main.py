@@ -26,7 +26,15 @@ async def unexpected_error(_, exc: Exception):
 
 def _run(fn, symbol, *args):
     sym = service.check_symbol(symbol)
-    return fn(get_data(), sym, *args)
+    d = get_data().session(sym)   # reads from and records into this ticker's cache file (when there is a disk cache)
+    try:
+        out = fn(d, sym, *args)
+    finally:
+        d.save_snapshot()         # keep what was fetched even if a later step failed
+    info = d.cache_info()
+    if info is not None and isinstance(out, dict):
+        out["cache"] = info       # the page says when cached data was fetched
+    return out
 
 
 @app.get("/api/health")

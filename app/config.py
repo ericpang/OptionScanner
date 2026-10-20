@@ -19,6 +19,9 @@ _load_env()
 DATA_MODE = os.environ.get("DATA_MODE", "cli").lower()  # cli | demo
 CACHE_TTL = int(os.environ.get("CACHE_TTL_SECONDS", "900"))
 FAIL_TTL = 45  # a failed call is remembered this long, so a rate-limited source is not hit again by every panel
+DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+# Per-ticker cache files in DATA_DIR (app/snapshot.py): a search within this many minutes of the last fetch reuses it.
+DISK_CACHE_SECONDS = int(float(os.environ.get("DISK_CACHE_MINUTES", "30")) * 60)   # 0 turns the disk cache off
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")  # any model your key can use
 CLI_TIMEOUT = 60

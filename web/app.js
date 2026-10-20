@@ -12,7 +12,7 @@ const big = (x) => {
 const safeUrl = (u) => (/^https?:\/\//i.test(u || "") ? u : "");
 const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
 
-let current = { symbol: null, range: "1y", chart: null, flows: null };
+let current = { symbol: null, range: "1y", chart: null, flows: null, cache: null };
 
 // A cached or older index.html may lack a section this script renders into. Create it rather than failing,
 // so one missing element can never make a panel (or the whole run) disappear.
@@ -26,6 +26,7 @@ function ensureSections() {
     next.parentNode.insertBefore(s, next);
   });
   if (!$("mode")) { const m = document.createElement("div"); m.id = "mode"; $("status").after(m); }
+  if (!$("cachenote")) { const m = document.createElement("div"); m.id = "cachenote"; $("mode").after(m); }
 }
 
 async function api(path) {
@@ -68,24 +69,53 @@ async function run(raw) {
   const symbol = (raw || "").trim().toUpperCase();
   if (!symbol) return;
   ensureSections();
-  ["header", "recon", "quality", "valuation", "thesis", "metrics", "flows", "options", "news", "sources", "mode"].forEach((i) => ($(i).innerHTML = ""));
+  ["header", "recon", "quality", "valuation", "thesis", "metrics", "flows", "options", "news", "sources", "mode", "cachenote"].forEach((i) => ($(i).innerHTML = ""));
   $("chartsec").hidden = true;
   setStatus(`Analyzing ${symbol}...`);
-  current = { symbol, range: "1y", chart: null, flows: null };
+  current = { symbol, range: "1y", chart: null, flows: null, cache: null };
   [...$("ranges").children].forEach((x) => x.classList.toggle("on", x.dataset.r === "1y"));
   history.replaceState(null, "", `?symbol=${encodeURIComponent(symbol)}`);
 
   initOptions("Waiting for the analysis panels to finish, then scanning option chains (10-30 seconds)...");
+  // Only these four requests say where the data came from. Later ones (a chart range, "Show more", the option scan)
+  // read the cache file these just wrote, which would make a live search look like a cached one.
+  const seen = (r) => { noteCache(r.cache); return r; };
   const jobs = [
-    api(`/api/analyze?symbol=${symbol}`).then(renderAnalysis),
-    api(`/api/chart?symbol=${symbol}&range=1y`).then((c) => { current.chart = c; $("chartsec").hidden = false; drawChart(); }),
-    api(`/api/flows?symbol=${symbol}`).then((f) => { current.flows = f; renderFlows(f); drawChart(); }),
-    api(`/api/news?symbol=${symbol}&limit=10`).then((n) => renderNews(n, 10)),
+    api(`/api/analyze?symbol=${symbol}`).then(seen).then(renderAnalysis),
+    api(`/api/chart?symbol=${symbol}&range=1y`).then(seen).then((c) => { current.chart = c; $("chartsec").hidden = false; drawChart(); }),
+    api(`/api/flows?symbol=${symbol}`).then(seen).then((f) => { current.flows = f; renderFlows(f); drawChart(); }),
+    api(`/api/news?symbol=${symbol}&limit=10`).then(seen).then((n) => renderNews(n, 10)),
   ];
   const res = await Promise.allSettled(jobs);
   const errs = res.filter((r) => r.status === "rejected").map((r) => r.reason.message);
   setStatus(errs.length ? [...new Set(errs)].join(" | ") : "", errs.length > 0);
   loadOptions();  // after the other panels, so the option scan does not compete with them for data calls
+}
+
+// ---------------------------------------------------------------- cache note
+// A response built from the on-disk cache carries `cache`: when that data was fetched, and how many items the cache
+// did not hold and had to be fetched live. Show the oldest time any panel used.
+function noteCache(c) {
+  if (!c || c.symbol !== current.symbol || !c.from_cache) return;
+  const o = current.cache;
+  const base = o && o.as_of <= c.as_of ? o : c;   // ISO times in one format compare in time order
+  current.cache = { as_of: base.as_of, age_seconds: base.age_seconds, ttl_seconds: c.ttl_seconds, live: (o ? o.live : 0) + c.live_calls };
+  renderCacheNote();
+}
+
+function ageText(sec) {
+  const m = Math.floor(sec / 60);
+  return m < 1 ? "less than a minute" : m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`;
+}
+
+function renderCacheNote() {
+  const c = current.cache;
+  if (!c) { $("cachenote").innerHTML = ""; return; }
+  const at = (ms) => (Number.isNaN(ms) ? "" : new Date(ms).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }));
+  const t0 = Date.parse(c.as_of), expires = at(t0 + c.ttl_seconds * 1000);
+  $("cachenote").innerHTML = `<div class="banner info"><b>Data fetched from cache</b> as of ${esc(at(t0) || c.as_of)} (${esc(ageText(c.age_seconds))} ago).`
+    + (c.live ? ` ${c.live} item${c.live === 1 ? " was" : "s were"} not in the cache and fetched live.` : "")
+    + (expires ? ` Searching again after ${esc(expires)} fetches fresh data.` : "") + `</div>`;
 }
 
 // ---------------------------------------------------------------- analysis

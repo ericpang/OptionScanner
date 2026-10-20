@@ -21,6 +21,7 @@ All market data comes from [Longbridge](https://open.longbridge.com). The analys
 
 | Section | Contents |
 |---|---|
+| Cache note | Only when the page was built from the data cache: when the data was fetched and when it will be refreshed (see [Data cache](#data-cache-per-ticker)) |
 | Header | Symbol, price, market cap, PE/PB, 52-week range |
 | Key Metrics | P/E (TTM), PEG, FCF growth, Debt/EBITDA, analyst ratings, operating margin, ROIC, ROE, net income growth, plus the additional metrics (see [Key metrics](#key-metrics)) |
 | Price Chart | Daily candles, EMA 20/50/200, volume and volume profile with POC and value area (see [Price chart](#price-chart-daily-candles-ema-2050200-and-volume-profile)) |
@@ -528,6 +529,36 @@ Validation: `view` is one of auto, bullish, bearish, neutral; `dte_min` and `dte
 
 ---
 
+## Data cache (per ticker)
+
+A ticker that was fetched recently is not fetched again. Its data is saved in the `data/` folder, one JSON file per ticker, and the page is built from that file instead of from Longbridge.
+
+| When you search a ticker | What happens |
+|---|---|
+| There is no file for it | Everything is fetched as usual and saved to `data/TICKER-TIMESTAMP.json`, for example `data/AAPL.US-20261020T143210+0800.json`. |
+| The file is under 30 minutes old | Nothing is fetched. The whole page (analysis, chart, flows, news and the option scan) is built from the file by the same code that builds it from live data, so it is the same page. A line under the search box says *Data fetched from cache as of 20 Oct 2026, 2:32 pm (12 min ago)* and when the data will be refreshed. |
+| The file is 30 minutes old or more | Everything is fetched again and saved to a new file named with the current time. The old file is deleted. |
+
+How it works:
+
+- **The file name is the clock.** The timestamp is local time with its UTC offset (`+0800`), and it alone decides whether a file is fresh, so renaming a file makes it older or younger. A time in the future is not trusted. The lifetime is `DISK_CACHE_MINUTES` in `.env` (default 30; 0 turns the cache off).
+- **The file holds the fetched data, not the analysis.** It is a log of the data calls made for the ticker (`quote`, `kline`, `statements`, `option_chain` and so on), one per line, with what each returned. Scores, charts and option candidates are recomputed from it every time, which is why a cached page cannot differ from a live one. The Data sources table shows when the data was fetched, not when it was searched.
+- **What the file does not hold is fetched and added.** An option scan that needs an expiry that was not scanned before, or **Show more** news, is fetched live and merged into the file, which keeps its name and time. If the page needed any of that when it loaded, the note says how many items.
+- **A failed call is tried again.** It is not saved, so a hiccup such as the SEC rate limit on insider trades is not frozen in for 30 minutes. The exception is a call the app already treats as unimportant: its failure is saved, or every search would repeat it. Today that is the news summary: `longbridge news detail` answers in Markdown, not JSON (checked on CLI 0.26.0 in October 2026), so every summary fails after three attempts, about 2 seconds per article. The news panel therefore shows headlines only and takes about 20 seconds on a live fetch, but a cached one is instant.
+- **Only live data is cached.** Demo mode never writes files. The IV history (`data/iv_history.json`) is added to only when the option chains were fetched live, so a cached page does not stamp today's date on old IV figures.
+- **A file that cannot be read or written never breaks the page.** An unreadable file, or one written by another version of the code (`VERSION` in [app/snapshot.py](app/snapshot.py), to be bumped when a data call changes what it returns), is ignored and replaced. If `data/` cannot be written, the page is built from live data and a warning goes to the server log.
+- **The files are git-ignored** (`data/*.json`). To force a fresh fetch for one ticker, delete its file.
+
+Measured on AAPL.US with the real CLI: the first search took 29 seconds and 65 CLI calls. The same search after restarting the server took 0.2 seconds and 1 CLI call (the SEC-rate-limited insider-trades call, retried by design), and all five panels were identical.
+
+Limits:
+
+- The data can be up to 30 minutes old, so the price is not live. Delete the ticker's file (or set `DISK_CACHE_MINUTES` lower) when you need a current quote.
+- A data call that returns a degraded result without failing (for example a statement section that came back empty) is saved as it came, and stays until the file expires.
+- Searches are cached per ticker, not per set of option controls: changing the expiry window reuses everything the file holds and fetches only what is new.
+
+---
+
 ## Skills used
 
 The skills live in [.agents/skills/](.agents/skills/) (locked in [skills-lock.json](skills-lock.json)).
@@ -582,7 +613,8 @@ Browser (HTML + JS)
       │  GET /api/analyze?symbol=AAPL.US
       ▼
 FastAPI backend (Python)
-  ├─ data.py        runs longbridge CLI (or Python SDK), parses JSON, caches results
+  ├─ data.py        runs longbridge CLI (or Python SDK), parses JSON, caches results in memory and, per ticker, on disk
+  ├─ snapshot.py    per-ticker cache files in data/: TICKER-timestamp.json, reused for 30 minutes
   ├─ reconcile.py   cross-statement checks (IS↔BS↔CF, market cap, period alignment)
   ├─ buffett.py     five-dimension moat scoring
   ├─ graham.py      NCAV + static/dynamic scoring + value-trap rules
@@ -684,7 +716,8 @@ Create `.env` in the project root:
 ```
 GEMINI_API_KEY=...                # optional; GEMINI_MODEL overrides the model (default gemini-2.5-flash)
 DATA_MODE=cli                     # cli | demo (synthetic data, no login needed)
-CACHE_TTL_SECONDS=900
+CACHE_TTL_SECONDS=900             # in-memory cache for data calls
+DISK_CACHE_MINUTES=30             # per-ticker cache files in data/ (see Data cache); 0 = off
 ```
 
 ### 4. Run
@@ -715,7 +748,7 @@ If a metric shows `n/a` when it should have a value, add the CLI's field label t
 python -m pytest -q
 ```
 
-The tests use demo mode and cover the EMA, volume profile, growth rules, flow indicators, news de-duplication, field-mapping layouts, the reconciliation gate (including a failing case), the API endpoints and input validation.
+The tests use demo mode and cover the EMA, volume profile, growth rules, flow indicators, news de-duplication, field-mapping layouts, the reconciliation gate (including a failing case), the API endpoints and input validation. `tests/test_cache.py` covers the per-ticker cache: file naming, the freshness boundary, replacing and renaming an old file, merging calls the file lacks, retrying failed calls, unreadable files, an unwritable folder, requests arriving together, and that a cached page equals the live one.
 
 ---
 
@@ -742,11 +775,13 @@ OptionScanner/
 │   ├── options.py           # chain/quote parsing, OCC symbols, Black-Scholes, IV metrics
 │   ├── strategies.py        # strategy builders, payoff, breakevens
 │   ├── option_scan.py       # view, filters, risk flags, multi-symbol scan
+│   ├── snapshot.py          # per-ticker disk cache
 │   ├── config.py            # bull/bear thresholds
 │   └── thesis.py
-├── data/
-│   └── iv_history.json      # daily ATM IV snapshots, builds the IV percentile over time (git-ignored)
-├── tests/                   # test_app.py, test_options.py, test_valuation.py
+├── data/                    # everything in here is git-ignored
+│   ├── iv_history.json      # daily ATM IV snapshots, builds the IV percentile over time
+│   └── AAPL.US-20261020T143210+0800.json   # one cache file per ticker searched in the last 30 minutes
+├── tests/                   # test_app.py, test_options.py, test_valuation.py, test_cache.py
 └── web/
     ├── index.html           # single page: search box, cards, bull/bear columns
     ├── app.js
@@ -758,6 +793,15 @@ OptionScanner/
 ## API
 
 The option endpoints (`/api/options`, `/api/options/payoff`, `/api/options/scan`) are described in [Option trade scanner](#option-trade-scanner).
+
+When the data cache is on (live mode), every JSON response also carries `cache`, which says where its data came from:
+
+```jsonc
+"cache": { "symbol": "AAPL.US", "from_cache": true, "as_of": "2026-10-20T06:32:10+00:00",
+           "age_seconds": 720, "ttl_seconds": 1800, "live_calls": 0 }
+```
+
+`from_cache` is true when the cache file supplied any of the response's data, `as_of` is when that data was fetched (UTC), and `live_calls` counts the calls the file did not hold, which were fetched and added to it. The page reads this only from the four requests a search makes (analyze, chart, flows, news): later requests such as a chart range or **Show more** read the file those just wrote, and would make a live search look like a cached one.
 
 `GET /api/analyze?symbol=AAPL.US`
 
@@ -818,7 +862,7 @@ The option endpoints (`/api/options`, `/api/options/payoff`, `/api/options/scan`
 - **Which period each scorecard uses** (shown on the page): Piotroski, the latest quarter against the same quarter a year earlier (fiscal-year score alongside); Altman, the latest quarter's balance sheet with trailing-twelve-month EBIT and sales; Sloan accruals, trailing twelve months over the average of the latest and year-ago assets; Magic Formula and Graham debt cover, the latest balance sheet; Beneish, the last fiscal year against the one before (its indices are calibrated on annual data). Before this, Altman, Sloan and Magic Formula used the January fiscal-year balance sheet against today's price, which mixed dates: for NVDA, Altman read 68 instead of 39, Sloan 10.9% instead of 25.4% (inside versus beyond the 25% red-flag line) and Magic Formula return on capital 434% instead of 175%.
 - **Unavailable is not the same as none.** If the insider (Form 4) feed fails, for example from an SEC rate limit, the insider figures show n/a, the Buffett "not net sellers" test shows n/a, and Graham says its insider adjustment was not applied. Before this, a failed lookup was read as "no insider selling", which removed Graham's penalty and passed the Buffett test; a genuinely empty feed (no trades) is still a real zero.
 - Buffett star averages round half up (4.5 stars is 5); Python's default rounding sent 4.5 to 4 and 3.5 to 4.
-- The CLI is limited to 10 API calls per second. The backend batches calls and caches them.
+- The CLI is limited to 10 API calls per second. The backend batches calls and caches them: in memory for 15 minutes, and per ticker on disk for 30 minutes (see [Data cache](#data-cache-per-ticker)).
 - The Graham and Buffett frameworks suit long-horizon investors. For a holding period under 3 years, the app shows a warning that these are not the right lenses.
 - The verdict wording is neutral and factual (for example, "meets Graham NCAV criteria"). It is not a buy or sell recommendation.
 

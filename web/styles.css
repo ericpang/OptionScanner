@@ -26,6 +26,7 @@ button[type=submit] { background: var(--accent); border-color: var(--accent); co
 button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
 .status { margin: 16px 0; color: var(--muted); } .status.err { color: var(--bad); }
 .banner { padding: 8px 12px; border-radius: 8px; background: var(--warn-bg); color: var(--warn); margin: 12px 0; font-size: 13px; }
+.banner.info { background: var(--card); color: var(--ink); border: 1px solid var(--line); border-left: 4px solid var(--accent); }
 .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
 .grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); }
 .m { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; border-left: 4px solid var(--line); }

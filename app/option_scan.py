@@ -89,7 +89,12 @@ def scan(d: Data, symbol: str, quote: dict, klines: list, analysis: Optional[dic
     hv_ref = hvs["hv60"] or hvs["hv20"]
     iv_hv = atm / hv_ref if atm and hv_ref else None
     reg = O.regime(iv_hv)
-    series = O.record_iv(symbol, atm) if d.mode != "demo" else {}
+    if d.mode == "demo":
+        series = {}
+    elif d.was_cached("option_chain", symbol, focus):
+        series = O.load_iv_history().get(symbol, {})   # recorded when the chain was fetched: not stamped with today again
+    else:
+        series = O.record_iv(symbol, atm)
     pct = O.iv_percentile(series, atm)
     term = [{"expiry": e, "dte": x["dte"], "atm_iv": None if x["atm_iv"] is None else round(x["atm_iv"], 4)}
             for e, x in sorted(eds.items())]

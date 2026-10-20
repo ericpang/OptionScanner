@@ -8,7 +8,6 @@ import json
 import math
 import re
 from datetime import date, datetime
-from pathlib import Path
 from typing import Optional
 
 from . import config
@@ -16,7 +15,7 @@ from .metrics import hv
 from .util import num
 
 _SQRT2 = math.sqrt(2.0)
-IV_HISTORY = Path(__file__).resolve().parent.parent / "data" / "iv_history.json"
+IV_HISTORY = config.DATA_DIR / "iv_history.json"
 
 
 # --------------------------------------------------------------------------------------------- symbols

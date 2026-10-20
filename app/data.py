@@ -1,19 +1,23 @@
 """Data layer: runs the Longbridge CLI (or the demo provider), parses it, and caches results.
 
 Every provider method returns normalized data or raises DataError. `Data` wraps a provider, records
-warnings for anything that failed (so the UI can show "n/a: reason"), and caches by (method, args).
+warnings for anything that failed (so the UI can show "n/a: reason"), and caches by (method, args): in memory
+for a few minutes, and, per ticker, in a file in the data folder (see snapshot.py).
 """
+import copy
 import json
 import re
 import shutil
 import subprocess
 import threading
 import time
-from typing import Any, Callable
+from datetime import datetime, timezone
+from typing import Any, Callable, Optional
 
 from . import config
 from .demo import DemoProvider
 from .normalize import finalize, merge_periods, parse_statement
+from .snapshot import MISS, Failure, Snapshot, SnapshotStore
 from .util import norm_key, num
 
 
@@ -479,7 +483,7 @@ class CliProvider:
 class Data:
     """Provider wrapper: caching + warnings."""
 
-    def __init__(self, provider=None):
+    def __init__(self, provider=None, store: Optional[SnapshotStore] = None):
         if provider is None:
             provider = DemoProvider() if config.DATA_MODE == "demo" else CliProvider()
         self.p = provider
@@ -487,10 +491,41 @@ class Data:
         self.warnings: list[str] = []
         self._locks: dict[tuple, threading.Lock] = {}
         self._glock = threading.Lock()
+        self.store = store                      # the per-ticker disk cache, or None
+        self.snap: Optional[Snapshot] = None    # this request's view of the ticker's cache file, set by session()
 
     @property
     def mode(self) -> str:
         return self.p.name
+
+    # --- per-ticker disk cache -----------------------------------------------------------------------------
+    def session(self, symbol: str) -> "Data":
+        """This request's view of the data for one ticker: it reads from, and records into, the ticker's cache file.
+        The provider, the in-memory cache, the locks and the warnings are shared with the parent, so panels loading at
+        the same time still share one fetch per call. Without a disk cache this is the Data itself."""
+        if self.store is None:
+            return self
+        view = copy.copy(self)   # a shallow copy: every shared member above is the same object
+        view.snap = self.store.open(symbol)
+        return view
+
+    def save_snapshot(self) -> None:
+        """Merge what this request fetched live into the ticker's cache file."""
+        if self.store is not None and self.snap is not None:
+            self.store.save(self.snap)
+
+    def cache_info(self) -> Optional[dict]:
+        """Where this request's data came from, for the page; None when there is no disk cache."""
+        return None if self.store is None or self.snap is None else self.store.describe(self.snap)
+
+    def fetched_at(self) -> str:
+        """When the data was fetched: the cache file's time if the file supplied any of it, otherwise now."""
+        t = self.snap.stamp if self.snap is not None and self.snap.from_cache else datetime.now(timezone.utc)
+        return t.astimezone(timezone.utc).isoformat(timespec="seconds")
+
+    def was_cached(self, name: str, *args) -> bool:
+        """True when this call was answered from the ticker's cache file instead of being fetched."""
+        return self.snap is not None and (name, *args) in self.snap.served
 
     def _lock(self, key: tuple) -> threading.Lock:
         with self._glock:
@@ -502,10 +537,20 @@ class Data:
             self.warnings.append(msg)
 
     def call(self, name: str, *args, optional=True, default=None, quiet=False):
-        """Cached provider call. Concurrent identical calls share one fetch (the page asks for the same data from
-        several endpoints at once), and a failure is cached briefly so a rate-limited source is not retried by
-        every panel in turn."""
+        """Cached provider call. The ticker's cache file answers first; a call it does not hold is fetched and added to
+        it. Concurrent identical calls share one fetch (the page asks for the same data from several endpoints at
+        once), and a failure is cached briefly so a rate-limited source is not retried by every panel in turn.
+        Failures are never written to the cache file."""
         key = (name, *args)
+        if self.snap is not None:
+            val = self.snap.get(key)
+            if val is not MISS:
+                if isinstance(val, Failure):   # a harmless failure remembered from the fetch that made the file
+                    if not optional:
+                        raise DataError(val.message)
+                    self._warn(name, val.message, quiet)
+                    return default
+                return val
         with self._lock(key):
             hit = self.cache.get(key)
             if hit and time.time() - hit[0] < hit[2]:
@@ -520,10 +565,14 @@ class Data:
                 val = getattr(self.p, name)(*args)
             except DataError as e:
                 self.cache[key] = (time.time(), ("err", str(e)), config.FAIL_TTL)
+                if self.snap is not None and quiet:
+                    self.snap.add_failure(key, str(e))   # expected and silent, so not worth trying again on every search
                 if not optional:
                     raise
                 self._warn(name, str(e), quiet)
                 return default
+            if self.snap is not None:
+                self.snap.add(key, val)   # copied here, before any caller can change `val` in place
             self.cache[key] = (time.time(), ("ok", val), config.CACHE_TTL)
             return val
 
@@ -534,5 +583,7 @@ _instance: Data | None = None
 def get_data() -> Data:
     global _instance
     if _instance is None:
-        _instance = Data()
+        # Demo data is synthetic and free to regenerate, so only live data is worth keeping on disk.
+        disk = config.DATA_MODE != "demo" and config.DISK_CACHE_SECONDS > 0
+        _instance = Data(store=SnapshotStore(config.DATA_DIR, config.DISK_CACHE_SECONDS) if disk else None)
     return _instance

@@ -1,6 +1,5 @@
 """Orchestrates data fetching and the calculators for each API endpoint."""
 import re
-from datetime import datetime, timezone
 
 from . import buffett, chart, config, flows, graham, metrics as M, news, quality as Q, reconcile, thesis, valuation
 from .data import Data, DataError, InputError
@@ -115,7 +114,7 @@ def analyze(d: Data, sym: str) -> dict:
     short = d.call("short_interest", sym)
     _fill_shares(d, stm, quote)
     _check_currency(d, sym, stm)
-    fetched = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    fetched = d.fetched_at()   # the cache file's time when the data came from it, so the appendix stays truthful
     period = stm["annual"][-1].get("period")
 
     base = {"symbol": sym, "mode": d.mode, "snapshot": _snapshot(quote), "fetched_at": fetched,
