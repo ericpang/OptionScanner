@@ -1,11 +1,11 @@
 """Orchestrates data fetching and the calculators for each API endpoint."""
-import re
+from datetime import datetime
+from typing import Optional
 
-from . import buffett, chart, config, flows, graham, metrics as M, news, quality as Q, reconcile, risks, thesis, valuation
+from . import avwap, benchmarks, buffett, chart, config, flows, graham, metrics as M, news, peers, quality as Q, reconcile, risks, sessions, thesis, valuation
 from .data import Data, DataError, InputError
-from .util import num
+from .util import SYMBOL_RE, num
 
-SYMBOL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_]{0,14}(\.[A-Za-z])?\.[A-Za-z]{2,3}$")  # allows share classes: BRK.B.US
 KLINE_COUNT = 1500
 
 
@@ -25,9 +25,15 @@ def _snapshot(quote: dict) -> dict:
     return {k: quote.get(k) for k in keys}
 
 
-def get_chart(d: Data, sym: str, range_: str, bins: int) -> dict:
-    out = chart.build(_klines(d, sym), range_, max(10, min(bins, 120)))
+def get_chart(d: Data, sym: str, range_: str, bins: int, days: Optional[int] = None) -> dict:
+    klines = _klines(d, sym)
+    out = chart.build(klines, range_, max(10, min(bins, 120)))
     out["symbol"] = sym
+    days = max(config.AVWAP_MIN_DAYS, min(days or config.AVWAP_DAYS, config.AVWAP_MAX_DAYS))
+    # Whether the newest bar is a finished session depends on when the data was fetched, which for a cached page is
+    # earlier than now. Asked after the kline call so the cache file's time is known.
+    final = sessions.is_final(sym, klines[-1]["t"], datetime.fromisoformat(d.fetched_at()))
+    out["avwap"] = avwap.build(klines, days, final)
     return out
 
 
@@ -126,6 +132,7 @@ def analyze(d: Data, sym: str) -> dict:
         return base
 
     m = M.compute(stm, quote, analyst, divs, insiders, klines, short)
+    bench = benchmarks.build(d.call("industry_valuation", sym), m)   # None when the industry feed has nothing: no comparison
     ch = chart.build(klines)
     fl = flows.build(klines, insiders, ownership, cap_flow)
     rh = Q.roic_vs_wacc(stm, quote, m["roic"])
@@ -158,7 +165,7 @@ def analyze(d: Data, sym: str) -> dict:
     crit = risks.build(stm, quote, m, qual, fl, ch, val, d.call("filings", sym, default=[], quiet=True), th["bear"])
     th["verdict"]["summary"] = thesis.summary(len(th["bull"]), len(crit["items"]), qual)   # the page shows the merged bear case
     base.update(
-        metrics=m, quality=qual, valuation=val, bull=th["bull"], bear=th["bear"], risks=crit, levels=th["levels"], verdict=th["verdict"],
+        metrics=m, benchmarks=bench, quality=qual, valuation=val, bull=th["bull"], bear=th["bear"], risks=crit, levels=th["levels"], verdict=th["verdict"],
         sources=_sources(period, fetched, d.mode),
         narrative=thesis.narrate({"symbol": sym, "bull": th["bull"], "verdict": th["verdict"],
                                   "bear": [{"title": x["title"], "evidence": "; ".join(x["facts"]), "source": x["source"]} for x in crit["items"]]}),
@@ -184,7 +191,39 @@ def get_filing_text(d: Data, sym: str) -> dict:
     return {"symbol": sym, "status": "ok", **got}
 
 
-MARKET_CCY = {"US": "USD", "HK": "HKD", "SH": "CNY", "SZ": "CNY", "SG": "SGD"}
+def get_peers(d: Data, sym: str, refresh: bool = False) -> dict:
+    """The stock's margins, returns, growth and leverage against its peers: the companies in its industry closest to it
+    in market cap, each measured by the same code as the stock (peers.py, benchmarks.py). The first request for an
+    industry takes about 40 seconds; the peers' figures are then kept for PEER_CACHE_DAYS. `refresh` measures them again."""
+    out = {"symbol": sym, "ttl_days": round(config.PEER_CACHE_SECONDS / 86400, 2), "min_peers": config.BENCH_MIN_PEERS}
+    quote = d.call("quote", sym, optional=False)
+    stm = d.call("statements", sym, optional=False)
+    if reconcile.run(stm, quote)["status"] == "fail":
+        return {**out, "status": "unavailable", "excluded": [], "message": "This company's own statements fail the "
+                "reconciliation checks, so it is not compared with peers."}
+    try:
+        members = d.call("industry_members", sym, optional=False)
+    except DataError as e:   # an answer in its own right, not a warning on every later page
+        return {**out, "status": "unavailable", "excluded": [], "message": f"The companies in this stock's industry could not be listed: {e}"}
+    me = next((m for m in members if m["symbol"] == sym), {})   # the list's own figure for its size, in the list's units
+    candidates = peers.pick(members, sym, me.get("name") or quote.get("name") or "",
+                            me.get("market_cap") or num(quote.get("market_cap")), config.BENCH_PEERS + config.BENCH_SPARES)
+    got = peers.gather(d, candidates, refresh)
+    usable = got["usable"]
+    excluded = [{"symbol": e["symbol"], "name": e["name"], "reason": e.get("reason", "")} for e in got["excluded"]]
+    if len(usable) < config.BENCH_MIN_PEERS:
+        message = ("Longbridge lists no other company in this stock's industry." if not candidates else
+                   f"Only {len(usable)} of the {len(usable) + len(excluded)} closest companies could be used "
+                   f"(at least {config.BENCH_MIN_PEERS} are needed).")
+        return {**out, "status": "unavailable", "message": message, "excluded": excluded}
+    mine = benchmarks.peer_values(M.compute(stm, quote, None, None, [], [], None), stm, peers.same_currency(sym, stm))
+    stamps = [e["fetched_at"] for e in usable if e.get("fetched_at")]
+    return {**out, "status": "ok", "as_of": min(stamps) if stamps else None, "company": mine,
+            "peers": [{k: e.get(k) for k in ("symbol", "name", "market_cap", "fetched_at", "values")} for e in usable],
+            "excluded": excluded, "metrics": benchmarks.compare_peers(mine, usable)}
+
+
+MARKET_CCY = config.MARKET_CURRENCY
 
 
 def _check_currency(d: Data, sym: str, stm: dict) -> None:
@@ -231,10 +270,14 @@ def _sources(period, fetched, mode) -> list:
                                       "Not GuruFocus's GF Value - derived", "financial-statement CF, IS, BS; quote; consensus"),
         ("Quality scorecards", "Piotroski 2000, Altman 1968, Beneish 1999, Sloan 1996, Greenblatt - derived", "financial-statement BS, IS, CF"),
         ("EMA / volume profile", "EMA seeded with SMA; profile spreads each bar's volume across its range", "kline day"),
+        ("Anchored VWAP", "sum(typical price x volume) / sum(volume) from the anchor (N trading days back, default 20) to the "
+                          "latest closed session; typical price = (H+L+C)/3 - derived", "kline day"),
         ("Flow indicators", "OBV, A/D line, CMF(20), up/down volume - derived from daily bars", "kline day"),
         ("Insider / holders", "Form 4 open-market buys and sells; institutional shareholder list", "insider-trades; shareholder"),
         ("Capital flow", "net flow by order size", "capital --flow"),
         ("Short interest", "short-positions rate (US and HK only)", "short-positions"),
+        ("Industry median (P/E, P/B, P/S)", "median over the companies in the stock's industry that have a positive value; percentile = "
+                                            "share of the others the stock is above. Longbridge's figures, set beside the metric cards' own", "industry-valuation dist"),
     ]
     return [{"field": f, "formula": fm, "source": f"{src}: {s}", "fetched_at": fetched, "period": period or "n/a"}
             for f, fm, s in rows]

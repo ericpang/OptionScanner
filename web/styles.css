@@ -2,14 +2,14 @@
   --bg: #f6f7f9; --card: #ffffff; --ink: #14181f; --muted: #5d6675; --line: #e1e5ea;
   --accent: #2557d6; --good: #1a7f4b; --good-bg: #e6f4ec; --bad: #b3261e; --bad-bg: #fbe9e7;
   --warn: #8a5a00; --warn-bg: #fdf1d8; --ema20: #d98200; --ema50: #2557d6; --ema200: #8b3fc7;
-  --up: #1a7f4b; --down: #b3261e;
+  --up: #1a7f4b; --down: #b3261e; --info-bg: #e3ebfc; --on-solid: #ffffff;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --bg: #0f1218; --card: #171b23; --ink: #e8ebf0; --muted: #98a2b3; --line: #2a303b;
     --accent: #6c93ff; --good: #4cc28a; --good-bg: #12301f; --bad: #ff8277; --bad-bg: #3a1815;
     --warn: #f0b84a; --warn-bg: #3a2c0c; --ema20: #ffb347; --ema50: #6c93ff; --ema200: #c08bff;
-    --up: #4cc28a; --down: #ff8277;
+    --up: #4cc28a; --down: #ff8277; --info-bg: #1a2540; --on-solid: #0f1218;
   }
 }
 * { box-sizing: border-box; }
@@ -32,6 +32,9 @@ button.on { background: var(--accent); border-color: var(--accent); color: #fff;
 .m { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; border-left: 4px solid var(--line); }
 .m.good { border-left-color: var(--good); } .m.bad { border-left-color: var(--bad); } .m.warn { border-left-color: var(--warn); }
 .m .l { font-size: 12px; color: var(--muted); } .m .v { font-size: 20px; font-weight: 650; } .m .s { font-size: 12px; color: var(--muted); }
+/* the industry and peer lines on a metric card: blue when the stock is better than the median, red when worse (a lighter
+   blue and red in dark mode), the card's grey when it is equal or there is nothing to compare */
+.bench.better { color: var(--accent); } .bench.worse { color: var(--bad); }
 .hdr { display: flex; flex-wrap: wrap; gap: 8px 28px; align-items: baseline; margin-top: 18px; }
 .hdr .px { font-size: 30px; font-weight: 700; } .hdr .ext { font-size: 16px; opacity: .7; margin-left: 6px; } .hdr .nm { font-size: 18px; font-weight: 600; }
 .hdr span.k { color: var(--muted); font-size: 12px; display: block; }
@@ -44,11 +47,29 @@ button.on { background: var(--accent); border-color: var(--accent); color: #fff;
 .pt a { font-size: 12px; }
 .tag { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; background: var(--line); }
 .tag.good { background: var(--good-bg); color: var(--good); } .tag.bad { background: var(--bad-bg); color: var(--bad); } .tag.warn { background: var(--warn-bg); color: var(--warn); }
+.tag.info { background: var(--info-bg); color: var(--accent); }
+.tag.solid { color: var(--on-solid); font-weight: 600; } .tag.good.solid { background: var(--good); } .tag.bad.solid { background: var(--bad); }
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
 th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
 th { color: var(--muted); font-weight: 600; }
 .chart { width: 100%; height: 620px; } .ranges { display: flex; gap: 6px; margin-bottom: 6px; }
+.chartbar { display: flex; flex-wrap: wrap; gap: 6px 24px; align-items: center; margin-bottom: 6px; } .chartbar .ranges { margin-bottom: 0; }
+.avwapctl { display: flex; gap: 6px; align-items: center; font-size: 13px; color: var(--muted); }
+.avwapctl input { width: 72px; padding: 6px 8px; }
+.avwap { border-left: 5px solid var(--line); }
+.avwap.good { border-left-color: var(--good); } .avwap.bad { border-left-color: var(--bad); }
+.avwap.warn { border-left-color: var(--warn); } .avwap.info { border-left-color: var(--accent); }
+.avwap .hl { font-size: 18px; font-weight: 650; }
+.avwap.good .hl { color: var(--good); } .avwap.bad .hl { color: var(--bad); } .avwap.warn .hl { color: var(--warn); } .avwap.info .hl { color: var(--accent); }
+.avwap .grid { margin: 10px 0; }
+.avwap summary { cursor: pointer; font-size: 13px; color: var(--muted); margin-top: 4px; }
+.avwap tr.on td { background: var(--info-bg); font-weight: 600; }
 .note { font-size: 12px; color: var(--muted); margin-top: 6px; }
+.peers summary { cursor: pointer; font-size: 13px; color: var(--muted); margin-top: 4px; }
+.ptable { overflow-x: auto; margin-top: 8px; }
+.ptable th, .ptable td { white-space: nowrap; }
+.ptable th:first-child, .ptable td:first-child { position: sticky; left: 0; background: var(--card); }
+.ptable td:nth-child(2) { background: var(--info-bg); }
 .stars { letter-spacing: 1px; color: var(--warn); }
 ul.plain { margin: 6px 0; padding-left: 18px; } ul.plain li { margin: 2px 0; }
 .news-item { padding: 10px 0; border-top: 1px solid var(--line); } .news-item:first-of-type { border-top: 0; }

@@ -30,7 +30,7 @@ from typing import Any, Callable, Optional
 
 log = logging.getLogger(__name__)
 
-VERSION = 1   # bump when a provider method changes what it returns: files written by older code are then ignored
+VERSION = 2   # bump when a provider method changes what it returns: files written by older code are then ignored
 STAMP = "%Y%m%dT%H%M%S%z"   # 20261020T143210+0800: local time plus its UTC offset, so it is unambiguous across DST
 _SYMBOL = re.compile(r"[A-Za-z0-9_.]+")
 _FILE = re.compile(r"(?P<symbol>[A-Za-z0-9_.]+)-(?P<stamp>\d{8}T\d{6}[+-]\d{4})\.json")

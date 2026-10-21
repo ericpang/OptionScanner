@@ -180,6 +180,34 @@ class DemoProvider:
         return [{"symbol": f"PEER{i}.US", "earnings_yield": float(rng.uniform(0.02, 0.09)),
                  "roc": float(rng.uniform(0.05, 0.35))} for i in range(8)]
 
+    def industry_valuation(self, symbol):
+        """A made-up industry of 25 companies centred near the stock's own multiples: the median and range, and the
+        stock's rank among them, in the shape the CLI provider returns."""
+        rng = _rng(symbol + "iv")
+        q = self.quote(symbol)
+        out = {}
+        for key in ("pe", "pb", "ps"):
+            own = q[key]
+            ok = own is not None and own > 0
+            centre = float(own) * float(rng.uniform(0.6, 1.5)) if ok else float(rng.uniform(8, 25))
+            peers = [float(centre * np.exp(rng.normal(0, 0.5))) for _ in range(24)]
+            every = sorted(peers + [float(own)]) if ok else sorted(peers)
+            out[key] = {"median": float(np.median(every)), "low": every[0], "high": every[-1],
+                        "value": None if own is None else float(own),
+                        "rank": 1 + sum(1 for v in peers if v < own) if ok else None, "total": len(every) if ok else None,
+                        "outside": "below" if own is not None and own <= 0 else None}
+        return out
+
+    def industry_members(self, symbol):
+        """A made-up industry: the stock and 14 other companies, their sizes spread around its own."""
+        rng = _rng(symbol + "im")
+        own = float(self.quote(symbol)["market_cap"])
+        out = [{"symbol": symbol, "name": symbol.split(".")[0] + " (demo)", "market_cap": own}]
+        for i in range(14):
+            out.append({"symbol": f"PEER{chr(65 + i)}.US", "name": f"Peer {chr(65 + i)} (demo)",
+                        "market_cap": float(own * np.exp(rng.normal(0, 1.2)))})
+        return sorted(out, key=lambda x: -x["market_cap"])
+
     def news(self, symbol, limit):
         d = date.today()
         base = symbol.split(".")[0]

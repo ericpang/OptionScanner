@@ -14,11 +14,12 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
-from . import config, sec
+from . import config, sec, sessions
 from .demo import DemoProvider
 from .normalize import finalize, merge_periods, parse_statement
+from .peerstore import PeerStore
 from .snapshot import MISS, Failure, Snapshot, SnapshotStore
-from .util import norm_key, num
+from .util import SYMBOL_RE, norm_key, num
 
 
 class DataError(Exception):
@@ -116,8 +117,27 @@ def _find_cli():
 class CliProvider:
     name = "cli"
 
+    # `financial-statement` allows about two calls a second to the whole account and answers a third with code 429002
+    # ("retry in 0.6 s"); measured on real peers, every third statement call failed and the retry slept for 1 to 2
+    # seconds. Its calls are spaced out here, across every thread of the process, so the page's panels and the peer
+    # comparison share that allowance instead of colliding. Other commands are not limited this tightly.
+    STATEMENT_GAP = 0.55
+    _statement_lock = threading.Lock()
+    _statement_next = 0.0   # when the next statement call may start (time.monotonic)
+
     def __init__(self):
         self.exe = _find_cli()
+
+    @classmethod
+    def _pace_statements(cls) -> None:
+        """Reserve the next free slot for a statement call and wait for it. The slot is taken under the lock but the
+        wait is not, so threads queue for their own slots rather than behind each other's sleeps."""
+        with cls._statement_lock:
+            now = time.monotonic()
+            start = max(now, cls._statement_next)
+            cls._statement_next = start + cls.STATEMENT_GAP
+        if start > now:
+            time.sleep(start - now)
 
     def run(self, *args: str) -> Any:
         if not self.exe:
@@ -126,6 +146,8 @@ class CliProvider:
         cmd = [self.exe, *args, "--format", "json"]
         err = ""
         for attempt in range(3):  # transient failures (rate limit, empty reply) are retried
+            if args and args[0] == "financial-statement":
+                self._pace_statements()
             try:
                 p = subprocess.run(cmd, capture_output=True, text=True, timeout=config.CLI_TIMEOUT, encoding="utf-8")
             except subprocess.TimeoutExpired:
@@ -212,13 +234,13 @@ class CliProvider:
     KLINE_MAX = 1000  # the API rejects more than 1000 candles per request (code 301607)
 
     @staticmethod
-    def _bars(raw) -> list:
+    def _bars(raw, symbol) -> list:
         out = []
         for b in _items(raw):
             if not isinstance(b, dict):
                 continue
             t = _find(b, "time", "timestamp", "date", "t")
-            row = {"t": str(t)[:10], "o": num(_find(b, "open", "o")), "h": num(_find(b, "high", "h")),
+            row = {"t": sessions.trading_date(symbol, t), "o": num(_find(b, "open", "o")), "h": num(_find(b, "high", "h")),
                    "l": num(_find(b, "low", "l")), "c": num(_find(b, "close", "c")),
                    "v": num(_find(b, "volume", "v"))}
             if None not in row.values():
@@ -230,14 +252,14 @@ class CliProvider:
         Over 1000 bars are fetched as the latest 1000 plus older date-range chunks."""
         from datetime import date, timedelta
         bars = self._bars(self.run("kline", symbol, "--period", "day", "--adjust", "forward",
-                                   "--count", str(min(count, self.KLINE_MAX))))
+                                   "--count", str(min(count, self.KLINE_MAX))), symbol)
         for _ in range(6):  # each chunk reaches ~900 calendar days further back
             if len(bars) >= count or not bars:
                 break
             oldest = date.fromisoformat(min(b["t"] for b in bars))
             end, start = oldest - timedelta(days=1), oldest - timedelta(days=900)
             older = self._bars(self.run("kline", "history", symbol, "--period", "day", "--adjust", "forward",
-                                        "--start", start.isoformat(), "--end", end.isoformat()))
+                                        "--start", start.isoformat(), "--end", end.isoformat()), symbol)
             if not older:
                 break  # reached the start of the stock's history
             have = {b["t"] for b in bars}
@@ -404,6 +426,45 @@ class CliProvider:
     def peers(self, symbol):
         return []  # Magic Formula peer ranks are optional; shown as n/a without peers
 
+    def industry_valuation(self, symbol):
+        """Where the stock's P/E, P/B and P/S sit among the companies of its industry (`industry-valuation dist`): the
+        industry median and range, and the stock's rank among the companies that have a positive value. A stock outside
+        that range (a loss, or a multiple above every peer) comes with no rank, only `outside`: "above" or "below".
+        Not `valuation`: its `industry_median` counts loss-makers too (0.78 for AAPL's P/E, where this gives 20.7)."""
+        raw = self.run("industry-valuation", "dist", symbol)
+        out = {}
+        for key in ("pe", "pb", "ps"):
+            d = raw.get(key) if isinstance(raw, dict) else None
+            median = num(d.get("median")) if isinstance(d, dict) else None
+            if median is None:
+                continue
+            rank, total = num(d.get("rank_index")), num(d.get("rank_total"))
+            ranked = bool(rank and total and 1 <= rank <= total)
+            flag = str(d.get("ranking") or "")   # a share (0 to 1), or "UpperLimitExceeded" / "LowerLimitExceeded"
+            out[key] = {"median": median, "low": num(d.get("low")), "high": num(d.get("high")), "value": num(d.get("value")),
+                        "rank": int(rank) if ranked else None, "total": int(total) if ranked else None,
+                        "outside": "above" if flag == "UpperLimitExceeded" else "below" if flag == "LowerLimitExceeded" else None}
+        if not out:
+            raise DataError(f"{symbol} has no industry valuation (an ETF or fund, or a stock Longbridge does not group)")
+        return out
+
+    def industry_members(self, symbol):
+        """The companies in the stock's industry with their market caps, largest first: the `symbols` of `valuation`,
+        which lists the whole industry (43 companies for AAPL, the stock itself included). Its figures are not used,
+        only the list. Symbols that do not look like CODE.MARKET are dropped, since each one later becomes an argument
+        to the CLI."""
+        raw = self.run("valuation", symbol)
+        rows = raw.get("symbols") if isinstance(raw, dict) else None
+        out = []
+        for sym, v in (rows.items() if isinstance(rows, dict) else ()):
+            cap = num(v.get("market_cap")) if isinstance(v, dict) else None
+            if cap and cap > 0 and SYMBOL_RE.match(str(sym)):
+                out.append({"symbol": str(sym), "name": str(v.get("name") or ""), "market_cap": cap})
+        if not out:
+            raise DataError(f"{symbol} has no list of the companies in its industry (an ETF or fund, or a stock "
+                            f"Longbridge does not group)")
+        return sorted(out, key=lambda x: -x["market_cap"])
+
     def news(self, symbol, limit):
         out = []
         for a in _items(self.run("news", symbol, "--count", str(max(limit * 2, 20)))):
@@ -507,7 +568,7 @@ class CliProvider:
 class Data:
     """Provider wrapper: caching + warnings."""
 
-    def __init__(self, provider=None, store: Optional[SnapshotStore] = None):
+    def __init__(self, provider=None, store: Optional[SnapshotStore] = None, peer_store: Optional[PeerStore] = None):
         if provider is None:
             provider = DemoProvider() if config.DATA_MODE == "demo" else CliProvider()
         self.p = provider
@@ -517,6 +578,8 @@ class Data:
         self._glock = threading.Lock()
         self.store = store                      # the per-ticker disk cache, or None
         self.snap: Optional[Snapshot] = None    # this request's view of the ticker's cache file, set by session()
+        # what was computed for companies used as peers, kept for days (peerstore.py); in memory unless one is given
+        self.peer_store = peer_store if peer_store is not None else PeerStore(None, config.PEER_CACHE_SECONDS)
 
     @property
     def mode(self) -> str:
@@ -545,6 +608,7 @@ class Data:
                 del self.cache[key]
         if self.store is not None:
             self.store.discard(symbol)
+        self.peer_store.discard(symbol)   # and the figures kept for it as somebody else's peer
 
     def cache_info(self) -> Optional[dict]:
         """Where this request's data came from, for the page; None when there is no disk cache."""
@@ -625,5 +689,8 @@ def get_data() -> Data:
     if _instance is None:
         # Demo data is synthetic and free to regenerate, so only live data is worth keeping on disk.
         disk = config.DATA_MODE != "demo" and config.DISK_CACHE_SECONDS > 0
-        _instance = Data(store=SnapshotStore(config.DATA_DIR, config.DISK_CACHE_SECONDS) if disk else None)
+        peers_on_disk = config.DATA_MODE != "demo" and config.PEER_CACHE_SECONDS > 0
+        _instance = Data(store=SnapshotStore(config.DATA_DIR, config.DISK_CACHE_SECONDS) if disk else None,
+                         peer_store=PeerStore(config.DATA_DIR / "peers.json" if peers_on_disk else None,
+                                              config.PEER_CACHE_SECONDS))
     return _instance

@@ -9,7 +9,7 @@ if exist ".venv\Scripts\activate.bat" call ".venv\Scripts\activate.bat"
 python --version >nul 2>&1 || (echo Python was not found on PATH. Install Python 3.11+ first. & pause & exit /b 1)
 
 rem Install dependencies on first run
-python -c "import fastapi, uvicorn, numpy, httpx" >nul 2>&1 || (
+python -c "import fastapi, uvicorn, numpy, httpx, tzdata" >nul 2>&1 || (
   echo Installing dependencies...
   python -m pip install -r requirements.txt || (echo Dependency install failed. & pause & exit /b 1)
 )

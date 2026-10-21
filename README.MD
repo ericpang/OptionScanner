@@ -25,6 +25,7 @@ All market data comes from [Longbridge](https://open.longbridge.com). The analys
 | Header | Symbol, price, market cap, PE/PB, 52-week range |
 | Key Metrics | P/E (TTM), PEG, FCF growth, Debt/EBITDA, analyst ratings, operating margin, ROIC, ROE, net income growth, plus the additional metrics (see [Key metrics](#key-metrics)) |
 | Price Chart | Daily candles, EMA 20/50/200, volume and volume profile with POC and value area (see [Price chart](#price-chart-daily-candles-ema-2050200-and-volume-profile)) |
+| Technical insights | The anchored VWAP read of the latest closed session: one of six price-and-volume conclusions, colour-coded; the number of days is configurable (see [Anchored VWAP](#anchored-vwap-avwap-and-the-volume-matrix)) |
 | Business & Moat | Moat type and width, pricing power, industry runway |
 | Financial Health | ROE history, FCF, leverage, margins, capex intensity |
 | Bear case | One list of every concern the data shows, merged from the rule-based bear points and the broader critic checks, (valuation, slowing growth, leverage and liquidity, earnings quality, dilution, insider selling, price action), grouped by theme, each with the figures behind it and a high / medium / low rating. Risks that only the company's filings can show, such as customer concentration, are listed as not measured, with links to the latest annual and quarterly filings (`app/risks.py`; thresholds are this app's own). With `SEC_USER_AGENT` set in `.env`, the app also reads the latest 10-K and newer 10-Q from SEC EDGAR (`app/sec.py`) and shows, verbatim and unscored, the company's own summary of risk factors and any sentence that gives a customer's share of revenue; it is a text search and can miss or mis-catch, so confirm in the filing |
@@ -72,7 +73,7 @@ These fill gaps in the first nine: growth quality, other valuation lenses, balan
 | Valuation | **EV/EBITDA** | (Market cap + debt − cash) ÷ TTM EBITDA | `calc-index`, BS, IS |
 | Valuation | **P/S and P/B** | Price to sales and price to book, each with its percentile vs. 10-year history | `calc-index`, `valuation` |
 | Valuation | **FCF yield** | TTM FCF ÷ market cap | CF, `quote` |
-| Valuation | **Valuation percentile vs. industry** | PE/PB/PS rank within the industry | `valuation`, `compare` |
+| Valuation | **Industry median and percentile** | P/E, P/B and P/S against the median of the companies in the same industry: how many times the median the stock is, and its percentile among them (see [Industry comparison](#industry-comparison)) | `industry-valuation dist` |
 | Balance sheet | **Interest coverage** | EBIT ÷ interest expense (below 3x is a flag) | IS |
 | Balance sheet | **Current ratio and quick ratio** | Current assets (less inventory for quick) ÷ current liabilities | BS |
 | Balance sheet | **Net debt / equity** | (Debt − cash) ÷ shareholders' equity | BS |
@@ -89,6 +90,31 @@ These fill gaps in the first nine: growth quality, other valuation lenses, balan
 | Events | **Next earnings date and recent filings** | Upcoming catalyst and the latest 10-K/10-Q/8-K | `filing`, `news` |
 
 Skipped on purpose: the DuPont breakdown (covered by ROE plus margins and leverage) and any intraday-only or options-flow data (outside the scope of this app).
+
+### Industry comparison
+
+The metric cards compare the company with its industry in two ways. The **valuation multiples** (P/E, P/S, P/B) are set against the **industry median**, which Longbridge publishes. Everything else (margins, returns, growth, leverage) is set against the median of the company's **peers**, which the app measures itself, because Longbridge publishes nothing for those. Both kinds of line are coloured by whether the company is **better or worse** than the median: **blue** when better, **red** when worse, and grey when it is equal or there is nothing to compare. The arrow (▲ above the median, ▼ below) takes the line's colour, so a ▼ can be blue (less debt, a cheaper multiple). Which way is better is the app's own call, set for each figure in `HIGHER_IS_BETTER` in [app/benchmarks.py](app/benchmarks.py) and in line with the cards' green, amber and red tags and the bull and bear table below: a **lower** figure is better for P/E, P/S, P/B, EV / EBITDA, Debt / EBITDA and net debt / equity, and a **higher** one for everything else (margins, returns, growth, cash conversion, FCF yield, interest coverage, current and quick ratio). That is a simplification: a high ROE can come from debt and a low multiple from trouble, and any difference counts, however small. The colours are `--accent` (blue) and `--bad` (red) in `web/styles.css`, lighter in dark mode, and hovering a line says which way round it was judged.
+
+**Valuation multiples: the industry median.** The P/E, P/S and P/B cards each carry two extra lines: the industry median, and where the company stands against it. For example, `Industry median 20.7 (20 companies)` and `▲ 1.9x the median, percentile 74`.
+
+- **Source.** One call per stock, `longbridge industry-valuation dist SYMBOL`. For each multiple it returns the industry's median, low and high, the company's rank and how many companies were ranked. It is cached with the rest of that ticker's data.
+- **Median, not average.** Only companies with a positive value are counted, so loss-makers do not drag a P/E median toward zero, and a few extreme multiples (negative equity, near-zero earnings) cannot wreck it the way they wreck an average.
+- **The ratio uses the card's own figure.** "1.9x the median" is the number on the card divided by the median beside it. The percentile is the share of the *other* companies the stock is above, from Longbridge's rank of its own figure for the company. It is shown only when that figure is within 10% of the card's (`BENCH_VALUE_TOLERANCE` in `app/config.py`), because a rank of a different number (a P/E on last year's EPS, say) does not describe this one.
+- **When there is no comparison.** A multiple that is not positive (a loss, negative equity) shows the median and "no comparison without a positive figure". A multiple beyond the industry's range shows "above (or below) the industry's range" instead of a percentile. A median over fewer than 5 companies (`BENCH_MIN_COMPANIES`) is marked "thin sample". If the call fails (an ETF, a stock Longbridge does not place in an industry, a rate limit that outlasts the retries), the cards show no industry lines and the "Some data could not be fetched" banner says why.
+- **Lower is better.** A multiple below the industry median counts as better (cheaper) and is blue; above it, worse and red, and one above the industry's whole range is worse too. Equal to the median as it reads (1.0x), or not positive: grey.
+- **Only as like-for-like as the group.** The industry is Longbridge's own grouping. AAPL's is "Hardware, Storage & Peripherals": 43 companies, including Dell, Seagate and Kodak, and quantum-computing start-ups worth a few million dollars.
+- **Not `valuation`.** That command also prints an `industry_median`, but it counts loss-makers (0.78 for AAPL's P/E, where `industry-valuation dist` gives 20.7), so it is not used for the median. (Its list of the industry's companies is used for the peers, below.)
+
+**Margins, returns, growth and leverage: the peer median.** Seventeen cards (operating margin, ROIC, ROE, Debt / EBITDA, FCF growth, net income growth, revenue growth, gross, net and FCF margin, cash conversion, EV / EBITDA, FCF yield, interest coverage, current and quick ratio, net debt / equity) carry two more lines, for example `Peer median 9.7% (10 peers)` and `▲ 37.1 pts above the median, above 10 of 10`. A **Peer group** panel under the metrics lists the peers and, in a table, every figure for every peer, so a median can be checked.
+
+- **Who the peers are.** The 10 companies in the stock's industry that are closest to it in market cap. `longbridge valuation SYMBOL` lists the whole industry with market caps (43 companies for AAPL, the stock itself included). Left out are the stock itself, its other lines (Hong Kong lists an RMB counter beside the HKD one, so 80700.HK is Tencent, not a peer of 700.HK; many companies have share classes) and any company already chosen under another line. A candidate that cannot be used is replaced by the next closest, up to 6 spares.
+- **How they are measured.** Each peer's statements go through the same code as the stock's (`metrics.compute`), so a peer's ROIC is defined exactly like the stock's, over the same periods: trailing twelve months for margins and coverage, the last fiscal year for ROIC, ROE, growth and gross margin. A peer whose statements fail the reconciliation checks is left out, as the stock would be (DELL, HPE and Baidu were, in testing). ROE and net debt / equity skip a peer whose equity is zero or negative (Dell's ROE reads -300%), and EV / EBITDA and FCF yield skip a peer whose statements are in another currency than its shares (an ADR).
+- **The statistic.** The median of the peers that have the figure, and at least 3 must (`BENCH_MIN_PEERS`); a figure with fewer shows "Peer median n/a: only 2 peers have this figure". The tooltip gives the middle half of the peers. "Above 7 of 9" is how many peers the stock is above. The gap is in percentage points for percentages, in the figure's own unit for ratios, and "times the median" for EV / EBITDA. The arrow says above or below the median, and the colour better or worse (see above).
+- **Cost and timing.** A peer takes 11 CLI calls, and `financial-statement` allows about 2 calls a second to the whole account (it answers a third with code 429002), so the first search of an industry takes about 40 seconds: 36 s for MSFT, 40 s for 700.HK and 47 s for AAPL and NVDA, which had peers to replace. It is its own request (`GET /api/peers`), started when the analysis is up, so nothing else on the page waits for it. The cards gain their peer lines, and the panel appears, when it finishes. Statement calls are spaced 0.55 s apart across the whole server (`CliProvider.STATEMENT_GAP`), which also removed the rate-limit retries the page's own statement calls were making (about one in four failed before).
+- **Reuse.** Each peer's figures (not its raw statements) are kept in `data/peers.json` for 7 days (`PEER_CACHE_DAYS` in `.env`; 0 means never reused). They are kept by company, so any stock in the same industry reuses them, and a repeat search takes a few milliseconds. A peer left out because its statements fail the checks is remembered for just as long. A peer that could not be fetched (SK Hynix's ADR has no statements at all) is remembered for an hour (`PEER_RETRY_SECONDS`), so a repeat search does not spend seconds on it again, but only when at least 3 other peers worked: a down service or a logged-out CLI is never remembered. **Refresh data** measures the peers again.
+- **When there is nothing to show.** If fewer than 3 peers can be used, or the industry cannot be listed, the panel says why and the cards show no peer lines. The stock's own statements must pass the reconciliation checks, so an ETF, a Singapore stock with no price, or a halted analysis shows no peers.
+- **Not compared.** PEG (its growth is a forward consensus for some companies and a historical CAGR for others, so a median across peers would mix bases), analyst ratings, dividend yield (Longbridge returns no yield at all for a company that pays none, which would bias a median toward payers), share count, insiders, short interest and the price-based figures.
+- **Nearest in size, not in business.** The peers are the closest companies by market cap in Longbridge's own industry grouping. AAPL's has quantum-computing start-ups and Kodak in it, and a mega-cap has few real peers. Periods follow each company's own latest figures, so fiscal years differ between peers.
 
 ### How the metrics feed the bull and bear case
 
@@ -136,6 +162,7 @@ A chart panel sits under the Key Metrics panel.
 
 - **Daily candlesticks**, default range 1 year, with 6M / 1Y / 2Y / 5Y toggles.
 - **EMA 20, 50 and 200** lines in three distinct colours, each toggleable from the legend.
+- **Technical insights**, a panel under the chart: the latest closed session read against an anchored VWAP (see [Anchored VWAP](#anchored-vwap-avwap-and-the-volume-matrix)). The chart itself draws no AVWAP or average-volume line.
 - **Volume bars** in a lower pane, coloured by up or down day.
 - **Volume profile**, a horizontal histogram on the right that shares the price axis with the candles. It marks:
   - **POC** (point of control): the price level with the most volume.
@@ -158,7 +185,7 @@ The chart must work in light and dark themes, and the EMA colours must stay dist
 
 ### API
 
-`GET /api/chart?symbol=AAPL.US&range=1y&bins=50`
+`GET /api/chart?symbol=AAPL.US&range=1y&bins=50&days=20`
 
 ```jsonc
 {
@@ -173,9 +200,95 @@ The chart must work in light and dark themes, and the EMA colours must stay dist
     "above_ema": { "20": true, "50": true, "200": true },
     "cross_50_200": "golden | death | none",
     "price_vs_value_area": "above | inside | below"
-  }
+  },
+  "avwap": { "days": 20, "conclusion": {} }   // see Anchored VWAP below
 }
 ```
+
+---
+
+## Anchored VWAP (AVWAP) and the volume matrix
+
+A **Technical insights** panel under the chart reads the latest closed session against an **anchored VWAP** as one of six conclusions, colour-coded so a result can be scanned at a glance. The number of days is configurable. The code is in [app/avwap.py](app/avwap.py) (the market clock is in [app/sessions.py](app/sessions.py)) and the tests in `tests/test_avwap.py` and `tests/test_sessions.py`. The chart draws no line for it: a dashed AVWAP line and a dashed average-volume line were tried and dropped as not useful, so the read is a handful of numbers, not a series.
+
+### The AVWAP
+
+- **Formula.** `AVWAP = sum(typical price x volume) / sum(volume)`, with typical price = (high + low + close) / 3, summed from the anchor session up to each later session.
+- **Anchor.** The first of the last N closed trading days, N = 20 by default. At the latest closed session the AVWAP equals the plain N-day volume-weighted average price. Anchoring changes the AVWAP of the sessions before it, which all accumulate from the same anchor, and that is what a cross is judged against.
+- **Setting N**, in three places (the more specific wins): `AVWAP_DAYS` in `.env` or in [app/config.py](app/config.py) is the default; `days` on `/api/chart` sets it for one request; and the **AVWAP anchored [N] trading days back** box beside the range buttons updates the panel at once and is kept while you search other tickers (reloading the page goes back to the default). The limits are 5 and 500 (`AVWAP_MIN_DAYS`, `AVWAP_MAX_DAYS`): the box clamps a typed value and the API answers 422 outside them. If the history is shorter than N, the panel says how many days it has and gives no read.
+- **Not offered:** an anchor at a chosen date (an earnings day, a swing low). The anchor is always N sessions back from the latest closed one.
+
+### The matrix
+
+The panel shows the first rule that fits, checked in the order 6, 5, then 1 to 4: rules 5 and 6 are special cases of the four quadrants, so they must be tested first or they could never be reached. The six conclusions read exactly as the framework words them.
+
+| # | Condition on the latest closed session | Conclusion | Colour |
+|---|---|---|---|
+| 1 | Close above the AVWAP, volume above its N-day average | Strong Institutional Accumulation (Strong Bullish) | green, solid |
+| 2 | Close above the AVWAP, volume below its average | Exhaustion / Liquidity Trap (Caution / Neutral) | yellow |
+| 3 | Close below the AVWAP, volume above its average | Aggressive Institutional Distribution (Strong Bearish) | red, solid |
+| 4 | Close below the AVWAP, volume below its average | Passive Fade / Lack of Interest (Neutral / Bearish) | red, tinted |
+| 5 | Close crossed the AVWAP, volume above its average | Trend Breakout/Breakdown Point (Directional Trigger) | blue |
+| 6 | Price consolidating at the AVWAP, volume flat | Chop Zone / Equilibrium (Sit on Hands) | yellow |
+
+Where the framework left a term open, this is what the app does (the numbers are in [app/config.py](app/config.py)):
+
+- **Price** is the close. **Volume** is that session's volume, compared with the *mean* volume of the same N sessions the AVWAP covers, the session itself included. Volume exactly at the average counts as not above it.
+- **Crossed** means the close is on one side of the AVWAP and the close before it was on the other side of that session's AVWAP (or on it). A cross on average or lower volume is no breakout: it keeps the quadrant it landed in. The panel says which way it crossed.
+- **Consolidating at the AVWAP** means the last 5 closes (`AVWAP_CHOP_BARS`) span no more than 1 x ATR(14) (`AVWAP_CHOP_ATR`, `AVWAP_ATR_DAYS`) and the latest close is within that distance of the AVWAP. Tightness is judged on the closes alone because, for a short anchor, the AVWAP is the average of those same closes: the first version of the test, five closes each within one ATR of the AVWAP, made the chop zone fire on 42% of sessions at a 5-day anchor, and this one gives 16%.
+- **Flat volume** is within 20% of the average (`AVWAP_FLAT_VOLUME`). A close exactly at the AVWAP is equilibrium whatever the volume.
+- The chop zone is tested before the breakout, because price sitting on the AVWAP on ordinary volume wanders across it all the time, and each wander would otherwise read as a breakout. The same wobble on heavy volume is still a breakout.
+- The panel's sentences restate what was measured: the distance, the volume ratio, the cross. Where volume is within 20% of its average, which is where the matrix's above/below split is thin, they add that the volume side of the call is marginal.
+
+**How often each fires.** Ten real tickers (US, HK and A-share), about 1,240 sessions each, evaluated at every session, October 2026:
+
+| Anchor N | 1 | 2 | 3 | 4 | 5 breakout | 6 chop | Closes across the AVWAP |
+|---|---|---|---|---|---|---|---|
+| 5 | 14.5% | 24.6% | 13.8% | 21.8% | 9.2% | 16.1% | 24.5% |
+| 10 | 16.1% | 28.2% | 14.7% | 23.2% | 7.1% | 10.6% | 16.1% |
+| 20 | 17.5% | 31.1% | 15.8% | 25.1% | 4.8% | 5.7% | 10.7% |
+| 50 | 18.2% | 34.8% | 15.9% | 25.0% | 3.4% | 2.8% | 7.2% |
+| 100 | 18.6% | 38.3% | 15.2% | 23.4% | 2.3% | 2.1% | 4.9% |
+| 250 | 19.9% | 43.1% | 13.8% | 20.4% | 1.6% | 1.3% | 3.1% |
+
+A shorter anchor stays closer to price and is crossed more often, so rules 5 and 6 fire more. Rules 2 and 4 outnumber 1 and 3 because a few very heavy days pull the average volume up, so most sessions fall below it. That comes from comparing with the mean, not from any stock.
+
+### The latest closed session
+
+The newest bar the data source returns can be a session that is still running. Its volume is a fraction of a day's and would read as "below average", so the app checks whether that bar's session had ended **when the data was fetched** (not when you look: a cached page is up to 30 minutes old). It uses the exchange's own clock: the regular close plus 15 minutes for the closing auction, which is 16:00 in New York, 16:00 in Hong Kong, 15:00 in Shanghai and Shenzhen and 17:00 in Singapore ([app/sessions.py](app/sessions.py)). If the session had not ended, the read is made on the session before and the panel says so. Half days are not modelled, so on those the newest bar is treated as unfinished for a few extra hours.
+
+### Colours
+
+Green is the accumulation call and red the distribution call, drawn as solid pills so the strong calls stand out; yellow is the trap and the chop zone; the weaker bearish call is a tinted red; the breakout trigger is blue, because it names a point to watch rather than a direction (the panel says which way the cross went). Colour is never the only signal: every state carries its words too. It works in the light and dark themes.
+
+### API
+
+`GET /api/chart?symbol=AAPL.US&range=1y&days=20` (`days` is optional, 5 to 500) also returns `avwap`:
+
+```jsonc
+"avwap": {
+  "days": 20, "min_days": 5, "max_days": 500,
+  "status": "ok | insufficient_history | no_volume", "message": null,
+  "last_bar_final": true,                      // false: the newest bar was still forming when it was fetched
+  "newest_bar": "2026-10-20", "as_of": "2026-10-20",   // as_of is the session the read is on
+  "anchor": { "date": "2026-09-22" },
+  "latest": { "close": 0, "avwap": 0, "distance": 0.012, "side": "above | below | at",
+              "volume": 0, "avg_volume": 0, "rel_volume": 1.28, "crossed": "up | down | null",
+              "consolidating": false, "atr": 0 },
+  "conclusion": { "id": "accumulation", "label": "", "bias": "", "text": "Strong Institutional Accumulation (Strong Bullish)",
+                  "tone": "good | warn | bad | info", "strong": true, "direction": null, "summary": "" },
+  "matrix": [ { "id": "", "label": "", "bias": "", "text": "", "tone": "", "strong": false, "when": "" } ],
+  "rules": { "flat_volume": 0.2, "chop_bars": 5, "chop_atr": 1.0, "atr_days": 14 }
+}
+```
+
+A `status` other than `ok` leaves `latest` and `conclusion` null and gives the reason in `message`. The wording, tones and rule table come from the backend; the page only shows them.
+
+### Limits
+
+- The AVWAP is built from daily bars (one typical price per day), not from every trade, so it approximates the true volume-weighted average cost.
+- "Institutional" is an inference from price against the volume-weighted average and from volume; the data does not show who traded. The matrix is a rule-of-thumb read of two numbers, not a forecast and not advice.
+- Prices are forward-adjusted (see Notes and limits); volume is as reported.
 
 ---
 
@@ -549,6 +662,7 @@ How it works:
 - **What the file does not hold is fetched and added.** An option scan that needs an expiry that was not scanned before, or **Show more** news, is fetched live and merged into the file, which keeps its name and time. If the page needed any of that when it loaded, the note says how many items.
 - **A failed call is tried again.** It is not saved, so a hiccup such as the SEC rate limit on insider trades is not frozen in for 30 minutes. The exception is a call the app already treats as unimportant: its failure is saved, or every search would repeat it. Today that is the news summary: `longbridge news detail` answers in Markdown, not JSON (checked on CLI 0.26.0 in October 2026), so every summary fails after three attempts, about 2 seconds per article. The news panel therefore shows headlines only and takes about 20 seconds on a live fetch, but a cached one is instant.
 - **Only live data is cached.** Demo mode never writes files. The IV history (`data/iv_history.json`) is added to only when the option chains were fetched live, so a cached page does not stamp today's date on old IV figures.
+- **The peers' figures are kept separately, and for longer.** What was computed for each company used as a peer (a dozen figures, not its raw statements) is in `data/peers.json` for 7 days (`PEER_CACHE_DAYS`), because a peer takes 11 CLI calls and a company's fundamentals change a quarter at a time. It is by company, not by search, so it is shared by every stock in the industry. See [Industry comparison](#industry-comparison).
 - **A file that cannot be read or written never breaks the page.** An unreadable file, or one written by another version of the code (`VERSION` in [app/snapshot.py](app/snapshot.py), to be bumped when a data call changes what it returns), is ignored and replaced. If `data/` cannot be written, the page is built from live data and a warning goes to the server log.
 - **Refresh data button.** The **Refresh data** button next to Analyze (and "refresh now" in the cache note) deletes the ticker's cache file and its in-memory entries, then searches again, so everything is fetched live without waiting for the lifetime to pass. It is `POST /api/refresh?symbol=...`.
 - **`DISK_CACHE_MINUTES` is the only freshness setting.** The in-memory cache never keeps a value longer than the disk cache does. With the disk cache off, live data is held in memory for only a few seconds, so panels loading together share one fetch and every new search fetches live data.
@@ -591,6 +705,8 @@ longbridge quote AAPL.US --format json
 longbridge calc-index AAPL.US --fields pe,pb,dps_rate,mktcap --format json
 longbridge company AAPL.US --format json
 longbridge financial-statement AAPL.US --kind BS --report af --format json   # also IS, CF, and --report qf
+longbridge industry-valuation dist AAPL.US --format json                      # industry median and rank for P/E, P/B, P/S
+longbridge valuation AAPL.US --format json                                    # `symbols`: the companies in the industry, with market caps (the peers)
 longbridge institution-rating AAPL.US --format json                          # Buy/Hold/Sell distribution + target price
 longbridge forecast-eps AAPL.US --format json                                 # EPS consensus
 longbridge kline AAPL.US --period day --count 1500 --format json
@@ -625,7 +741,12 @@ FastAPI backend (Python)
   ├─ graham.py      NCAV + static/dynamic scoring + value-trap rules
   ├─ quant.py       volatility regime, momentum, factor z-scores
   ├─ metrics.py     P/E TTM, PEG, FCF growth, Debt/EBITDA, ratings, op. margin, ROIC, ROE, NI growth + extras
+  ├─ benchmarks.py  P/E, P/B and P/S against the industry median (Longbridge industry-valuation dist); the peer medians
+  ├─ peers.py       the peer group: nearest companies in size, each measured by metrics.py and the reconciliation gate
+  ├─ peerstore.py   the peers' computed figures, kept for 7 days in data/peers.json
   ├─ chart.py       EMA 20/50/200, volume profile (POC, VAH, VAL), trend signals
+  ├─ avwap.py       anchored VWAP over a configurable number of days, and the six-rule price/volume matrix
+  ├─ sessions.py    exchange clocks: a daily bar's local trading date, and whether its session had ended
   ├─ flows.py       13F and insider activity, capital flow, OBV/A-D/CMF, accumulation/distribution read
   ├─ news.py        latest news (10, expandable to 25), dedupe, filings, market mood facts
   ├─ quality.py     Piotroski, Altman, Beneish, Sloan, Magic Formula, ROIC vs. WACC
@@ -724,6 +845,8 @@ SEC_USER_AGENT=Your Name you@example.com   # optional; lets the app read the lat
 GEMINI_API_KEY=...                # optional; GEMINI_MODEL overrides the model (default gemini-2.5-flash)
 DATA_MODE=cli                     # cli | demo (synthetic data, no login needed)
 DISK_CACHE_MINUTES=30             # how long fetched data is reused: per-ticker cache files in data/ (see Data cache); 0 = off
+AVWAP_DAYS=20                     # optional; trading days back the anchored VWAP starts (5 to 500); the chart has a box to change it
+PEER_CACHE_DAYS=7                 # optional; how long a peer's computed figures are reused (data/peers.json); 0 = never reused
 ```
 
 ### 4. Run
@@ -754,7 +877,7 @@ If a metric shows `n/a` when it should have a value, add the CLI's field label t
 python -m pytest -q
 ```
 
-The tests use demo mode and cover the EMA, volume profile, growth rules, flow indicators, news de-duplication, field-mapping layouts, the reconciliation gate (including a failing case), the API endpoints and input validation. `tests/test_cache.py` covers the per-ticker cache: file naming, the freshness boundary, replacing and renaming an old file, merging calls the file lacks, retrying failed calls, unreadable files, an unwritable folder, requests arriving together, and that a cached page equals the live one.
+The tests use demo mode and cover the EMA, volume profile, growth rules, flow indicators, news de-duplication, field-mapping layouts, the reconciliation gate (including a failing case), the API endpoints and input validation. `tests/test_cache.py` covers the per-ticker cache: file naming, the freshness boundary, replacing and renaming an old file, merging calls the file lacks, retrying failed calls, unreadable files, an unwritable folder, requests arriving together, and that a cached page equals the live one. `tests/test_avwap.py` covers the anchored VWAP (against hand-computed values and the plain formula), each of the six conclusions reached from price and volume, the decision table including its precedence, the days setting and its limits, and the page controls; `tests/test_sessions.py` covers bar dates and session ends, including summer and winter time. `tests/test_benchmarks.py` covers the industry comparison: the arithmetic and its edge cases (no positive multiple, outside the industry's range, a rank for a different figure, a thin sample), reading the CLI's answer (including the out-of-range and no-industry replies, taken from real output), the analysis with and without the feed, the cards and the Peer group panel the real `web/app.js` draws, and how the page loads the peers (the request it makes, a response for a stock the user has left, a failed one, and that a search does not wait for them), all run under Node (those tests are skipped when Node is not installed). `tests/test_peers.py` covers the peer group: the figures compared and their edge cases (negative equity, another currency, too few peers, ties), choosing peers (nearest in size, never the company's own other lines, using the real Hong Kong list), the store (freshness boundary, restart, an unreadable or unwritable file, threads), measuring a peer by the same code as the company, gathering with spares, what is and is not kept when a peer fails, reading the CLI's industry list, the statement-call spacing, and the service and `/api/peers` endpoint.
 
 ---
 
@@ -773,7 +896,12 @@ OptionScanner/
 │   ├── graham.py
 │   ├── quant.py
 │   ├── metrics.py           # key and additional metrics
+│   ├── benchmarks.py        # P/E, P/B, P/S against the industry median; the peer medians
+│   ├── peers.py             # the peer group: choosing, measuring and gathering peers
+│   ├── peerstore.py         # the peers' figures, kept for days
 │   ├── chart.py             # EMAs, volume profile, chart signals
+│   ├── avwap.py             # anchored VWAP and the volume matrix
+│   ├── sessions.py          # exchange clocks: bar dates, session ends
 │   ├── flows.py             # institutional buying/selling indicators
 │   ├── news.py              # latest news and market mood
 │   ├── quality.py           # published quality scorecards
@@ -787,8 +915,9 @@ OptionScanner/
 │   └── thesis.py
 ├── data/                    # everything in here is git-ignored
 │   ├── iv_history.json      # daily ATM IV snapshots, builds the IV percentile over time
+│   ├── peers.json           # the peers' computed figures, kept for 7 days
 │   └── AAPL.US-20261020T143210+0800.json   # one cache file per ticker searched in the last 30 minutes
-├── tests/                   # test_app.py, test_options.py, test_valuation.py, test_cache.py
+├── tests/                   # test_app.py, test_options.py, test_valuation.py, test_cache.py, test_avwap.py, test_sessions.py, test_benchmarks.py, test_peers.py (+ cards.js and peers_flow.js, the Node harnesses)
 └── web/
     ├── index.html           # single page: search box, cards, bull/bear columns
     ├── app.js
@@ -833,6 +962,13 @@ When the data cache is on (live mode), every JSON response also carries `cache`,
       "insider_net": {}, "short_interest": {}, "beta": 0, "relative_strength": {}
     }
   },
+  "benchmarks": {              // null when the industry feed has nothing; P/E, P/B and P/S only (see Industry comparison)
+    "pe": { "median": 20.71, "low": 0.78, "high": 52.49, "company": 38.43, "times_median": 1.86, "better": false,
+            "percentile": 0.74, "rank": 15, "n": 20, "outside": null, "thin": false }
+    // "pb" and "ps" have the same fields. "outside" is "above" or "below" when the stock is beyond the industry's
+    // range (no rank, so percentile, rank and n are null); "company" and "times_median" are null for a multiple that is not positive.
+    // "better": true when the multiple is below the median (cheaper), false when above, null when equal or not comparable
+  },
   "reconciliation": { "status": "pass", "residuals": [] },
   "buffett": { "moat": "wide", "stars": { "moat": 5, "financials": 5, "management": 4, "valuation": 2, "visibility": 4 }, "holding_period": "5y+" },
   "graham": { "static_score": 0, "adjusted_score": 0, "value_trap": false, "buy_line": 0 },
@@ -844,6 +980,25 @@ When the data cache is on (live mode), every JSON response also carries `cache`,
 }
 ```
 
+`GET /api/peers?symbol=AAPL.US` (add `&refresh=true` to measure the peers again). The first search of an industry takes about 40 seconds; see [Industry comparison](#industry-comparison).
+
+```jsonc
+{
+  "symbol": "AAPL.US", "status": "ok",          // "unavailable" comes with a "message" and the "excluded" list, and nothing else
+  "ttl_days": 7.0, "min_peers": 3, "as_of": "2026-10-21T13:28:46+00:00",   // as_of: when the oldest peer's figures were fetched
+  "company": { "operating_margin": 0.3317, "roic": 0.927 },                // the stock's own figures, 17 in all (benchmarks.PEER_METRICS)
+  "peers": [ { "symbol": "SNDK.US", "name": "", "market_cap": 2e11, "fetched_at": "", "values": { "operating_margin": 0.616 } } ],
+  "excluded": [ { "symbol": "DELL.US", "name": "", "reason": "its statements fail this app's checks: BS: current assets sum off by -15.6% (tolerance 2%)" } ],
+  "metrics": {
+    "operating_margin": { "company": 0.3317, "median": 0.0986, "q1": 0.05, "q3": 0.3, "n": 10,   // n: peers that have the figure
+                          "diff": 0.2331, "ratio": 3.36, "above": 7,                           // above: peers the stock is above
+                          "better": true, "higher_is_better": true }                           // the verdict the page colours by
+    // the median, quartiles, diff, ratio, above and better are null when fewer than min_peers peers have the figure, or the stock has none;
+    // better is also null when the stock equals the median. higher_is_better comes from benchmarks.HIGHER_IS_BETTER
+  }
+}
+```
+
 ---
 
 ## Notes and limits
@@ -852,6 +1007,7 @@ When the data cache is on (live mode), every JSON response also carries `cache`,
 - The statements carry no EPS, share count or interest expense for some companies, so P/E uses the quoted TTM P/E, share-based items show n/a (or use market cap / price for the latest period, with a warning), and PEG growth comes from the consensus EPS estimate against trailing EPS.
 - Debt includes short-term borrowings, the current portion of long-term debt, long-term debt and long-term leases.
 - The kline API returns at most 1000 candles per request, so longer history is fetched in date-range chunks, forward-adjusted.
+- **Daily bar dates.** Longbridge stamps a daily bar with local midnight written in UTC: the Hong Kong bar for Wednesday 21 October 2026 arrives as `2026-10-20T16:00:00Z`. The app used to take the date off the front of that string, so every Hong Kong, A-share and Singapore bar was dated a day early, and each Monday bar landed on a Sunday, which the chart's weekend gap hides: those charts had no Monday candles. Bars are now dated by their local trading day (`app/sessions.py`). That needs a time zone database; on Windows the `tzdata` package in `requirements.txt` supplies it, and without one the old dating is kept. The cache format version was bumped, so cache files written before the change are ignored. US bars (stamped 04:00 or 05:00 UTC) were never affected.
 - The option scanner works from last-trade prices (the CLI gives no bid or ask), and Greeks and probabilities are model outputs. See its Limits section.
 - Insider trades come from the 100 most recent SEC Form 4 filings. If those do not reach back 12 months, the 12-month figure is labelled partial with the date the data starts from (with only 40 filings, AVGO's 12-month insider selling was understated by about $120M). Only open-market buys and sells count; grants, tax withholding, gifts and exercises are ignored. SEC EDGAR rate-limits repeated requests (HTTP 429), in which case the insider signal shows as missing.
 - Magic Formula return on capital is shown as ">500%" when the capital base is tiny (asset-light companies such as AVGO), since the ratio is not meaningful there.
@@ -872,5 +1028,7 @@ When the data cache is on (live mode), every JSON response also carries `cache`,
 - The CLI is limited to 10 API calls per second. The backend batches calls and caches them: in memory for 15 minutes, and per ticker on disk for 30 minutes (see [Data cache](#data-cache-per-ticker)).
 - The Graham and Buffett frameworks suit long-horizon investors. For a holding period under 3 years, the app shows a warning that these are not the right lenses.
 - The verdict wording is neutral and factual (for example, "meets Graham NCAV criteria"). It is not a buy or sell recommendation.
+- **Industry median for P/E, P/B and P/S; peer median for the rest.** The multiples use Longbridge's industry medians, the only ones the CLI offers. Margins, returns, growth and leverage are set against ten peers that the app measures with its own code (see [Industry comparison](#industry-comparison)). Longbridge's own peer table (`compare`) is not used for them because its definitions differ from the app's: for AAPL its P/E is 44.2 (last fiscal year's EPS) against the app's 38.4 (trailing twelve months), and its ROE is 148.8% against 171.4%. The `industry-rank` totals (revenue, net profit and their growth) are size-weighted, so a dominant company is mostly compared with itself (Apple is about three-quarters of its own industry's net profit). Checked live: the multiples on AAPL.US, MSFT.US, 700.HK and QUBT.US (a loss-maker), and the peer comparison on AAPL.US, MSFT.US, NVDA.US and 700.HK.
+- **The Magic Formula peer ranks still show n/a.** That row is built by the main analysis request, which cannot wait 40 seconds for peers, and the peer group's figures are kept for later searches, not handed to it. They could feed it (the earnings yield and return on capital it ranks are computed by the same `metrics`/`quality` code), but the scorecard would then change between a first and a repeat search; that is a decision for later, not part of the peer comparison.
 
 **Disclaimer:** For reference only. Not investment advice. Make investment decisions independently, based on your own risk tolerance.

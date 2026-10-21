@@ -13,11 +13,14 @@ const safeUrl = (u) => (/^https?:\/\//i.test(u || "") ? u : "");
 const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
 
 let current = { symbol: null, range: "1y", chart: null, flows: null, cache: null };
+let avwapDays = null;   // the AVWAP anchor chosen on this page; null leaves it to the server's default (AVWAP_DAYS)
+let forcePeers = false; // set by "Refresh data": the next peer comparison measures the peers again instead of reusing them
+let chartSeq = 0;       // numbers chart requests, so a slow one that was superseded cannot overwrite a newer one
 
 // A cached or older index.html may lack a section this script renders into. Create it rather than failing,
 // so one missing element can never make a panel (or the whole run) disappear.
 function ensureSections() {
-  const order = ["header", "recon", "quality", "valuation", "thesis", "metrics", "chartsec", "flows", "options", "news", "sources"];
+  const order = ["header", "recon", "quality", "valuation", "thesis", "metrics", "peers", "chartsec", "flows", "options", "news", "sources"];
   order.forEach((id, i) => {
     if ($(id)) return;
     const s = document.createElement("section");
@@ -51,17 +54,30 @@ function tag(v, good, bad, higherBetter = true) {
 }
 const card = (label, value, sub = "", cls = "") =>
   `<div class="m ${cls}"><div class="l">${esc(label)}</div><div class="v">${value}</div><div class="s">${sub}</div></div>`;
+const lines = (...xs) => xs.filter(Boolean).join("<br>");   // a card's sub-text, one line per non-empty part
+// The industry and peer lines of a card: blue when the stock is better than the median, red when worse, grey when it is
+// equal or there is nothing to compare (`better` is true, false or null, from the API). The arrow is inside the line, so
+// it takes the line's colour.
+const benchmark = (html, better) => (html ? `<span class="bench${better === true ? " better" : better === false ? " worse" : ""}">${html}</span>` : "");
 
 document.addEventListener("DOMContentLoaded", () => {
   $("form").addEventListener("submit", (e) => { e.preventDefault(); run($("symbol").value); });
   $("refresh").addEventListener("click", refreshData);
   $("cachenote").addEventListener("click", (e) => { if (e.target.closest("#refresh2")) refreshData(); });
-  $("ranges").addEventListener("click", async (e) => {
+  $("ranges").addEventListener("click", (e) => {
     const b = e.target.closest("button");
     if (!b || !current.symbol) return;
     current.range = b.dataset.r;
     [...$("ranges").children].forEach((x) => x.classList.toggle("on", x === b));
-    try { current.chart = await api(`/api/chart?symbol=${current.symbol}&range=${current.range}`); drawChart(); } catch (err) { setStatus(err.message, true); }
+    reloadChart();
+  });
+  $("avwapdays").addEventListener("change", (e) => {
+    const el = e.target, shown = current.chart && current.chart.avwap ? current.chart.avwap.days : "";
+    const v = Math.round(Number(el.value));
+    if (el.value.trim() === "" || !Number.isFinite(v)) { el.value = shown; return; }   // not a number: put back what is drawn
+    avwapDays = Math.min(+el.max || 500, Math.max(+el.min || 5, v));                    // the server's limits arrive with each chart
+    el.value = avwapDays;
+    if (current.symbol) reloadChart();
   });
   const q = new URLSearchParams(location.search).get("symbol");
   if (q) { $("symbol").value = q; run(q); }
@@ -76,6 +92,7 @@ async function refreshData() {
     const r = await fetch(`/api/refresh?symbol=${encodeURIComponent(symbol)}`, { method: "POST" });
     if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `Refresh failed (${r.status})`);
   } catch (err) { setStatus(err.message, true); $("refresh").disabled = false; return; }
+  forcePeers = true;
   run(symbol);
 }
 
@@ -84,10 +101,10 @@ async function run(raw) {
   if (!symbol) return;
   $("refresh").disabled = false;
   ensureSections();
-  ["header", "recon", "quality", "valuation", "thesis", "metrics", "flows", "options", "news", "sources", "mode", "cachenote"].forEach((i) => ($(i).innerHTML = ""));
+  ["header", "recon", "quality", "valuation", "thesis", "metrics", "peers", "flows", "options", "news", "sources", "mode", "cachenote"].forEach((i) => ($(i).innerHTML = ""));
   $("chartsec").hidden = true;
   setStatus(`Analyzing ${symbol}...`);
-  current = { symbol, range: "1y", chart: null, flows: null, cache: null, filing: null };
+  current = { symbol, range: "1y", chart: null, flows: null, cache: null, filing: null, analysis: null, peers: null };
   [...$("ranges").children].forEach((x) => x.classList.toggle("on", x.dataset.r === "1y"));
   history.replaceState(null, "", `?symbol=${encodeURIComponent(symbol)}`);
 
@@ -96,8 +113,10 @@ async function run(raw) {
   // read the cache file these just wrote, which would make a live search look like a cached one.
   const seen = (r) => { noteCache(r.cache); return r; };
   const jobs = [
-    api(`/api/analyze?symbol=${symbol}`).then(seen).then(renderAnalysis),
-    api(`/api/chart?symbol=${symbol}&range=1y`).then(seen).then((c) => { current.chart = c; $("chartsec").hidden = false; drawChart(); }),
+    // The peer comparison starts as soon as the analysis is up, beside the other panels, not after them. The braces
+    // matter: returning loadPeers' promise would hold the whole search (the status line, filings, options) for a minute.
+    api(`/api/analyze?symbol=${symbol}`).then(seen).then(renderAnalysis).then(() => { loadPeers(symbol); }),
+    api(chartUrl(symbol)).then(seen).then(showChart),
     api(`/api/flows?symbol=${symbol}`).then(seen).then((f) => { current.flows = f; renderFlows(f); drawChart(); }),
     api(`/api/news?symbol=${symbol}&limit=10`).then(seen).then((n) => renderNews(n, 10)),
   ];
@@ -138,6 +157,7 @@ function renderCacheNote() {
 
 // ---------------------------------------------------------------- analysis
 function renderAnalysis(a) {
+  current.analysis = a;
   if (a.mode === "demo") $("mode").innerHTML = `<div class="banner">DEMO DATA: synthetic numbers for trying the app. Not real market data.</div>`;
   const s = a.snapshot;
   $("header").innerHTML = `<div class="hdr">
@@ -154,7 +174,7 @@ function renderAnalysis(a) {
   renderQuality(a.quality);
   renderValuation(a.valuation, a.snapshot);
   renderThesis(a);
-  renderMetrics(a.metrics, a.snapshot);
+  renderMetrics(a.metrics, a.snapshot, a.benchmarks, current.peers);
   renderSources(a);
 }
 
@@ -305,31 +325,50 @@ function renderThesis(a) {
   renderFilingText();
 }
 
-function renderMetrics(m, snap) {
-  const x = m.extra;
+// The industry lines under a valuation multiple: the industry median, how many times it the company is, and where the
+// company ranks. All of it comes from the API (app/benchmarks.py); no block means the industry feed had nothing for
+// this stock. The arrow says above or below the median; the colour says better or worse, and for a multiple a lower
+// one is better (cheaper), which is the app's simplification: a low multiple can reflect trouble.
+function industryLine(b) { return benchmark(industryText(b), b ? b.better : null); }
+function industryText(b) {
+  if (!b) return "";
+  const head = `Industry median ${fx(b.median, b.median < 10 ? 2 : 1)}${na(b.n) ? "" : ` (${b.n} companies)`}`
+    + (b.thin ? ` <span class="tag warn" title="Few companies, so the median is only a rough guide">thin sample</span>` : "");
+  if (na(b.times_median)) return `${head}<br>no comparison without a positive figure`;
+  const t = b.times_median;
+  const where = b.outside ? `${esc(b.outside)} the industry's range` : na(b.percentile) ? "" : `percentile ${Math.round(b.percentile * 100)}`;
+  const verdict = b.better === null || b.better === undefined ? "" : `${b.better ? "Better" : "Worse"} than the industry median (a lower multiple is better).`;
+  const rank = na(b.percentile) || na(b.rank) ? "" : `Above ${Math.round(b.percentile * 100)}% of the other companies in the industry (rank ${b.rank} of ${b.n}, lowest first).`;
+  const tip = [verdict, rank].filter(Boolean).join(" ");
+  return `${head}<br><span${tip ? ` title="${esc(tip)}"` : ""}>${t >= 1 ? "▲" : "▼"} ${fx(t, t < 1 ? 2 : 1)}x the median${where ? ", " + where : ""}</span>`;
+}
+
+function renderMetrics(m, snap, bench, peers) {
+  const x = m.extra, bm = bench || {}, pr = peers;
   const peg = m.peg, d = m.debt_to_ebitda, ar = m.analyst_ratings;
   const A = [
-    card("P/E (TTM)", fx(m.pe_ttm.value, 1), m.pe_ttm.basis ? "basis: " + m.pe_ttm.basis : ""),
+    card("P/E (TTM)", fx(m.pe_ttm.value, 1), lines(m.pe_ttm.basis ? "basis: " + m.pe_ttm.basis : "", industryLine(bm.pe))),
     card("PEG", fx(peg.value), peg.growth_basis ? `growth ${fx(peg.growth_pct, 1)}% (${peg.growth_basis.replace(/_/g, " ")}); ${esc(peg.pe_basis || "P/E")} ${fx(peg.pe_used, 1)}${peg.note ? ". " + esc(peg.note) : ""}` : "n/a (growth not positive)", tag(peg.value, 1, 2, false)),
-    card("FCF growth", pct(m.fcf_growth.yoy), `3y CAGR ${pct(m.fcf_growth.cagr_3y)}; FCF ${big(m.fcf_growth.fcf)}`, tag(m.fcf_growth.yoy, 0.0001, 0)),
-    card("Debt / EBITDA", d.net_cash ? "net cash" : fx(d.gross, 1) + "x", `net ${fx(d.net, 1)}x; EBITDA ${big(d.ebitda)}`, d.net_cash ? "good" : tag(d.gross, 2, 4, false)),
+    card("FCF growth", pct(m.fcf_growth.yoy), lines(`3y CAGR ${pct(m.fcf_growth.cagr_3y)}; FCF ${big(m.fcf_growth.fcf)}`, peerLine(pr, "fcf_growth")), tag(m.fcf_growth.yoy, 0.0001, 0)),
+    card("Debt / EBITDA", d.net_cash ? "net cash" : fx(d.gross, 1) + "x", lines(`net ${fx(d.net, 1)}x; EBITDA ${big(d.ebitda)}`, peerLine(pr, "debt_to_ebitda")), d.net_cash ? "good" : tag(d.gross, 2, 4, false)),
     card("Analyst ratings", esc(ar.consensus || "n/a"), `${ar.buy ?? "-"} Buy / ${ar.hold ?? "-"} Hold / ${ar.sell ?? "-"} Sell; target ${fx(ar.target_mean)} (${pct(ar.upside_pct)})`, ar.consensus === "Buy" ? "good" : ar.consensus === "Sell" ? "bad" : ""),
-    card("Operating margin", pct(m.operating_margin.ttm), "5y: " + m.operating_margin.history.map((v) => pct(v, 0)).join(" ")),
-    card("ROIC", m.roic > 1 ? ">100%" : pct(m.roic), m.roic > 1 ? "invested capital is mostly cash, so the exact figure is not meaningful" : "NOPAT / avg invested capital", tag(m.roic, 0.12, 0.08)),
-    card("ROE", pct(m.roe.latest), "history: " + m.roe.history.map((v) => pct(v, 0)).join(" "), tag(m.roe.latest, 0.15, 0.10)),
-    card("Net income growth", pct(m.net_income_growth.yoy), `3y ${pct(m.net_income_growth.cagr_3y)}, 5y ${pct(m.net_income_growth.cagr_5y)}, last qtr YoY ${pct(m.net_income_growth.latest_quarter_yoy)}`, tag(m.net_income_growth.cagr_3y, 0.10, 0)),
+    card("Operating margin", pct(m.operating_margin.ttm), lines("5y: " + m.operating_margin.history.map((v) => pct(v, 0)).join(" "), peerLine(pr, "operating_margin"))),
+    card("ROIC", m.roic > 1 ? ">100%" : pct(m.roic), lines(m.roic > 1 ? "invested capital is mostly cash, so the exact figure is not meaningful" : "NOPAT / avg invested capital", peerLine(pr, "roic")), tag(m.roic, 0.12, 0.08)),
+    card("ROE", pct(m.roe.latest), lines("history: " + m.roe.history.map((v) => pct(v, 0)).join(" "), peerLine(pr, "roe")), tag(m.roe.latest, 0.15, 0.10)),
+    card("Net income growth", pct(m.net_income_growth.yoy), lines(`3y ${pct(m.net_income_growth.cagr_3y)}, 5y ${pct(m.net_income_growth.cagr_5y)}, last qtr YoY ${pct(m.net_income_growth.latest_quarter_yoy)}`, peerLine(pr, "net_income_growth")), tag(m.net_income_growth.cagr_3y, 0.10, 0)),
   ];
   const B = [
-    card("Revenue growth", pct(x.revenue_growth.yoy), `3y ${pct(x.revenue_growth.cagr_3y)}, 5y ${pct(x.revenue_growth.cagr_5y)}`),
+    card("Revenue growth", pct(x.revenue_growth.yoy), lines(`3y ${pct(x.revenue_growth.cagr_3y)}, 5y ${pct(x.revenue_growth.cagr_5y)}`, peerLine(pr, "revenue_growth"))),
     card("EPS revisions / surprises", pct(x.eps_revisions.forward_vs_90d), "last 4 surprises: " + (x.eps_revisions.surprises_last4.map((v) => pct(v, 0)).join(" ") || "n/a")),
-    card("Gross margin", pct(x.gross_margin.latest), "5y: " + x.gross_margin.history.map((v) => pct(v, 0)).join(" "), tag(x.gross_margin.latest, 0.30, 0.20)),
+    card("Gross margin", pct(x.gross_margin.latest), lines("5y: " + x.gross_margin.history.map((v) => pct(v, 0)).join(" "), peerLine(pr, "gross_margin")), tag(x.gross_margin.latest, 0.30, 0.20)),
     card("Non-operating income", na(x.non_operating_share) ? "n/a" : pct(x.non_operating_share, 0), "of pre-tax income (TTM): investment gains and interest, which flatter net income", na(x.non_operating_share) ? "" : x.non_operating_share >= 0.25 ? "bad" : x.non_operating_share >= 0.10 ? "warn" : ""),
-    card("Net / FCF margin", `${pct(x.net_margin)} / ${pct(x.fcf_margin)}`),
-    card("Cash conversion", fx(x.cash_conversion) + "x", "FCF / net income", tag(x.cash_conversion, 0.8, 0.8)),
-    card("EV / EBITDA", fx(x.ev_ebitda, 1)), card("P/S, P/B", `${fx(x.ps, 1)}, ${fx(x.pb, 1)}`), card("FCF yield", pct(x.fcf_yield)),
-    card("Interest coverage", na(x.interest_coverage) ? "n/a" : fx(x.interest_coverage, 1) + "x", "", tag(x.interest_coverage, 5, 3)),
-    card("Current / quick ratio", `${fx(x.current_ratio)} / ${fx(x.quick_ratio)}`, "", tag(x.current_ratio, 1.5, 1)),
-    card("Net debt / equity", fx(x.net_debt_equity)),
+    card("Net margin", pct(x.net_margin), peerLine(pr, "net_margin")), card("FCF margin", pct(x.fcf_margin), peerLine(pr, "fcf_margin")),
+    card("Cash conversion", fx(x.cash_conversion) + "x", lines("FCF / net income", peerLine(pr, "cash_conversion")), tag(x.cash_conversion, 0.8, 0.8)),
+    card("EV / EBITDA", fx(x.ev_ebitda, 1), peerLine(pr, "ev_ebitda")), card("P/S", fx(x.ps, 1), industryLine(bm.ps)), card("P/B", fx(x.pb, 1), industryLine(bm.pb)),
+    card("FCF yield", pct(x.fcf_yield), peerLine(pr, "fcf_yield")),
+    card("Interest coverage", na(x.interest_coverage) ? "n/a" : fx(x.interest_coverage, 1) + "x", peerLine(pr, "interest_coverage"), tag(x.interest_coverage, 5, 3)),
+    card("Current ratio", fx(x.current_ratio), peerLine(pr, "current_ratio"), tag(x.current_ratio, 1.5, 1)), card("Quick ratio", fx(x.quick_ratio), peerLine(pr, "quick_ratio")),
+    card("Net debt / equity", fx(x.net_debt_equity), peerLine(pr, "net_debt_equity")),
     card("Dividend", pct(x.dividend.yield), `payout ${pct(x.dividend.payout, 0)}; years of growth ${x.dividend.years_growth ?? "n/a"}`),
     card("Share count, 3y", pct(x.share_count_change_3y), "buyback yield " + pct(x.buyback_yield), tag(x.share_count_change_3y, -0.0001, 0.03, false)),
     card("Insider net (3m / 6m / 12m)", [x.insider_net.m3, x.insider_net.m6, x.insider_net.m12].map(big).join(" / "), x.insider_net.m12_partial_from ? `12m is partial: data only from ${esc(x.insider_net.m12_partial_from)}` : "open-market buys and sells (Form 4)"),
@@ -339,10 +378,119 @@ function renderMetrics(m, snap) {
     card("From 52w high / low", `${pct(x.from_52w_high, 0)} / ${pct(x.from_52w_low, 0)}`, "vs EMA 200: " + pct(x.from_ema200)),
   ];
   $("metrics").innerHTML = `<h2>Key metrics</h2><div class="grid">${A.join("")}</div><h2>Additional metrics</h2><div class="grid">${B.join("")}</div>
-   <div class="note">n/a means the input was not in the data; the app never estimates a missing figure. Tags: green favourable, amber neutral, red unfavourable (thresholds in app/config.py).</div>`;
+   <div class="note">n/a means the input was not in the data; the app never estimates a missing figure. Tags: green favourable, amber neutral, red unfavourable (thresholds in app/config.py).
+   Industry lines (P/E, P/S, P/B): the median over the companies in the stock's industry that have a positive value, from Longbridge. The industry is Longbridge's own grouping, so it is only as like-for-like as that group is.
+   Peer lines (everything else): the median over the companies in that industry closest to the stock in market cap, each measured by this app's own formulas. They appear when the peer comparison below has loaded; see Peer group.
+   Blue means better than the median and red worse; grey means equal, or nothing to compare. A lower figure is better for P/E, P/S, P/B, EV / EBITDA, Debt / EBITDA and net debt / equity, and a higher one for the rest. That is a simplification (a high ROE can come from debt, a low multiple from trouble), and the arrow still says above or below.</div>`;
+}
+
+// ---------------------------------------------------------------- peers
+// The figures compared with peers, in the order of the peer table: [label, how a value is shown, how the stock is set
+// against the median, the unit of a gap]. "pts" is a gap in percentage points, "diff" a gap in the figure's own unit and
+// "ratio" is times the median. The keys are the API's (PEER_METRICS in app/benchmarks.py).
+const PEER_FIG = {
+  operating_margin: ["Operating margin", (v) => pct(v), "pts"],
+  roic: ["ROIC", (v) => pct(v), "pts"],
+  roe: ["ROE", (v) => pct(v), "pts"],
+  debt_to_ebitda: ["Debt / EBITDA", (v) => (na(v) ? "n/a" : fx(v, 1) + "x"), "diff", "x"],
+  fcf_growth: ["FCF growth", (v) => pct(v), "pts"],
+  net_income_growth: ["Net income growth", (v) => pct(v), "pts"],
+  revenue_growth: ["Revenue growth", (v) => pct(v), "pts"],
+  gross_margin: ["Gross margin", (v) => pct(v), "pts"],
+  net_margin: ["Net margin", (v) => pct(v), "pts"],
+  fcf_margin: ["FCF margin", (v) => pct(v), "pts"],
+  cash_conversion: ["Cash conversion", (v) => (na(v) ? "n/a" : fx(v) + "x"), "diff", "x"],
+  ev_ebitda: ["EV / EBITDA", (v) => fx(v, 1), "ratio"],
+  fcf_yield: ["FCF yield", (v) => pct(v), "pts"],
+  interest_coverage: ["Interest coverage", (v) => (na(v) ? "n/a" : fx(v, 1) + "x"), "diff", "x"],
+  current_ratio: ["Current ratio", (v) => fx(v), "diff"],
+  quick_ratio: ["Quick ratio", (v) => fx(v), "diff"],
+  net_debt_equity: ["Net debt / equity", (v) => fx(v), "diff"],
+};
+
+// The peer lines under a metric: the peers' median, and how the stock stands against it. Nothing until the comparison
+// has loaded. The arrow says above or below the median; the colour says better or worse, which way round depending on the
+// figure (the API's `higher_is_better`: a lower Debt / EBITDA is better, a higher margin is).
+function peerLine(p, key) {
+  const b = p && p.status === "ok" && p.metrics[key];
+  return benchmark(peerText(p, key), b ? b.better : null);
+}
+function peerText(p, key) {
+  const b = p && p.status === "ok" && p.metrics[key];
+  if (!b) return "";
+  const [, f, how, unit = ""] = PEER_FIG[key];
+  if (na(b.median)) return `Peer median n/a: only ${b.n} peer${b.n === 1 ? " has" : "s have"} this figure`;
+  const head = `Peer median ${f(b.median)} (${b.n} peers)`;
+  if (na(b.diff)) return `${head}<br>no figure for ${esc(p.symbol)} to compare`;
+  const amount = how === "pts" ? `${(Math.abs(b.diff) * 100).toFixed(1)} pts` : `${fx(Math.abs(b.diff), Math.abs(b.diff) >= 10 ? 1 : 2)}${unit}`;
+  const gap = b.diff === 0 ? "equal to the median"
+    : how === "ratio" && !na(b.ratio) ? `${fx(b.ratio, b.ratio < 1 ? 2 : 1)}x the median`
+    : `${amount} ${b.diff > 0 ? "above" : "below"} the median`;
+  const verdict = b.better === null || b.better === undefined ? "" : `${b.better ? "Better" : "Worse"} than the peer median (${b.higher_is_better ? "higher" : "lower"} is better for this figure). `;
+  const tip = `${verdict}Middle half of the peers: ${f(b.q1)} to ${f(b.q3)}`;
+  return `${head}<br><span title="${esc(tip)}">${b.diff > 0 ? "▲" : b.diff < 0 ? "▼" : "="} ${gap}, above ${b.above} of ${b.n}</span>`;
+}
+
+// Measuring the peers takes about 45 seconds the first time (the statements endpoint allows about two calls a second),
+// so it is its own request, started when the analysis is up. The metric cards are drawn again when it arrives.
+async function loadPeers(sym) {
+  const a = current.analysis;
+  if (!a || a.halted || current.symbol !== sym) return;
+  const fresh = forcePeers;
+  forcePeers = false;
+  $("peers").innerHTML = `<h2>Peer group</h2><div class="card"><p class="note">Comparing ${esc(sym)} with the companies in its industry closest to it in size. The first time takes about 45 seconds, because the data service allows only about two statement downloads a second; the results are then reused for days.</p></div>`;
+  try {
+    const p = await api(`/api/peers?symbol=${encodeURIComponent(sym)}${fresh ? "&refresh=true" : ""}`);
+    if (current.symbol !== sym) return;   // the user searched for something else meanwhile
+    current.peers = p;
+    renderMetrics(a.metrics, a.snapshot, a.benchmarks, p);
+    renderPeers(p);
+  } catch (e) {
+    if (current.symbol === sym) $("peers").innerHTML = `<h2>Peer group</h2><div class="card"><p class="note">The peer comparison failed: ${esc(e.message)}</p></div>`;
+  }
+}
+
+function renderPeers(p) {
+  const left = (p.excluded || []).map((e) => `<span title="${esc(e.name)}">${esc(e.symbol)}</span>: ${esc(e.reason)}`);
+  if (p.status !== "ok") {
+    $("peers").innerHTML = `<h2>Peer group</h2><div class="card"><p>${esc(p.message)}</p>${left.length ? `<p class="note"><b>Tried and left out:</b> ${left.join("; ")}.</p>` : ""}</div>`;
+    return;
+  }
+  const when = p.as_of ? new Date(p.as_of).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }) : "";
+  const names = p.peers.map((c) => `<span title="${esc(c.name)}, market cap ${big(c.market_cap)}">${esc(c.symbol)}</span>`).join(", ");
+  const rows = Object.entries(PEER_FIG).map(([k, [label, f]]) => {
+    const b = p.metrics[k];
+    return `<tr><td>${esc(label)}</td><td><b>${f(b.company)}</b></td><td>${f(b.median)}</td><td>${na(b.q1) ? "n/a" : `${f(b.q1)} to ${f(b.q3)}`}</td>${p.peers.map((c) => `<td>${f(c.values[k])}</td>`).join("")}</tr>`;
+  }).join("");
+  $("peers").innerHTML = `<h2>Peer group <span class="tag">${p.peers.length} peers</span></h2>
+  <div class="card peers">
+   <p>The ${p.peers.length} companies in ${esc(p.symbol)}'s industry closest to it in market cap: ${names}. Each is measured by this app's own formulas, the same ones that measure ${esc(p.symbol)}, and passes the same reconciliation checks.</p>
+   <details><summary>Show every figure for every peer</summary>
+    <div class="ptable"><table><tr><th>Figure</th><th>${esc(p.symbol)}</th><th>Peer median</th><th>Middle half</th>${p.peers.map((c) => `<th title="${esc(c.name)}, market cap ${big(c.market_cap)}">${esc(c.symbol)}</th>`).join("")}</tr>${rows}</table></div>
+   </details>
+   <div class="note">${when ? `The peers' figures were fetched ${esc(when)} (the oldest of them) and are reused for ${p.ttl_days} days; <b>Refresh data</b> measures them again. ` : ""}${left.length ? `<b>Left out:</b> ${left.join("; ")}. Each was replaced by the next closest company. ` : ""}A median needs ${p.min_peers} peers with the figure. ROE and net debt / equity skip a peer whose equity is zero or negative, and EV / EBITDA and FCF yield skip a peer whose statements are in another currency than its shares. Periods follow each company's own latest figures, so fiscal years differ between peers. The comparison is only as like-for-like as Longbridge's industry grouping.</div>
+  </div>`;
 }
 
 // ---------------------------------------------------------------- chart
+const chartUrl =(symbol) => `/api/chart?symbol=${encodeURIComponent(symbol)}&range=${current.range}${avwapDays ? `&days=${avwapDays}` : ""}`;
+
+function showChart(c) {
+  current.chart = c;
+  $("chartsec").hidden = false;
+  drawChart();
+  renderAvwap(c.avwap);
+}
+
+// A new range or AVWAP anchor: fetch the chart again. Only the newest request may draw.
+async function reloadChart() {
+  const sym = current.symbol, seq = ++chartSeq;
+  try {
+    const c = await api(chartUrl(sym));
+    if (seq === chartSeq && sym === current.symbol) showChart(c);
+  } catch (err) { if (seq === chartSeq) setStatus(err.message, true); }
+}
+
 function drawChart() {
   const c = current.chart;
   if (!c || !window.Plotly) return;
@@ -386,6 +534,42 @@ function drawChart() {
     50/200 cross (last ~60 sessions): ${esc(s.cross_50_200)}. Price vs value area: ${esc(s.price_vs_value_area || "n/a")}. POC ${fx(vp.poc)}, VAL ${fx(vp.val)}, VAH ${fx(vp.vah)}.`;
 }
 window.matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change", drawChart);
+
+// ---------------------------------------------------------------- anchored VWAP insights
+// The matrix conclusion for the latest closed session. The wording, the colour and the rule table all come from the
+// API (app/avwap.py), so the framework is defined in one place.
+function renderAvwap(a) {
+  let box = $("avwapinsight");
+  if (!box) { box = document.createElement("div"); box.id = "avwapinsight"; $("chartsig").after(box); }
+  if (!a) { box.innerHTML = ""; return; }
+  const field = $("avwapdays");
+  if (field) { field.value = a.days; field.min = a.min_days; field.max = a.max_days; }
+  const title = `Technical insights: ${a.days}-day anchored VWAP`;
+  if (a.status !== "ok") { box.innerHTML = `<h2>${title}</h2><div class="card"><p>${esc(a.message)}</p></div>`; return; }
+  const c = a.conclusion, l = a.latest, r = a.rules;
+  const open = box.querySelector("details[open]") ? " open" : "";   // keep it open across a range or anchor change
+  const dist = l.side === "at" ? "at the AVWAP" : `${pct(Math.abs(l.distance), 2)} ${esc(l.side)}`;
+  const cross = l.crossed ? `crossed ${l.crossed === "up" ? "above" : "below"} the AVWAP this session` : "no cross this session";
+  const forming = a.last_bar_final ? "" : `<p class="note"><b>The newest bar (${esc(a.newest_bar)}) was still forming when this data was fetched.</b> Its volume is a fraction of a full day's, so the read is on the ${esc(a.as_of)} close.</p>`;
+  const rows = a.matrix.map((m, i) => `<tr class="${m.id === c.id ? "on" : ""}"><td>${i + 1}</td><td>${esc(m.when)}</td><td>${esc(m.text)}</td></tr>`).join("");
+  box.innerHTML = `<h2>${title} <span class="tag ${c.tone}${c.strong ? " solid" : ""}">${esc(c.bias)}</span></h2>
+  <div class="card avwap ${c.tone}">
+    <div class="hl">${esc(c.text)}</div>
+    <p>${esc(c.summary)}</p>
+    <div class="grid">
+      ${card("Close", fx(l.close), `${esc(a.as_of)}, latest closed session`)}
+      ${card(`AVWAP ${a.days}d`, fx(l.avwap), `anchored at the ${esc(a.anchor.date)} session`)}
+      ${card("Close vs AVWAP", dist, esc(cross), l.side === "above" ? "good" : l.side === "below" ? "bad" : "")}
+      ${card("Volume vs average", `${fx(l.rel_volume, 2)}x`, `${big(l.volume)} vs ${big(l.avg_volume)}, the ${a.days}-day average`)}
+    </div>
+    ${forming}
+    <details${open}><summary>How this is decided</summary>
+      <table><tr><th>#</th><th>Condition on the latest closed session</th><th>Conclusion</th></tr>${rows}</table>
+      <div class="note">Checked in this order: 6, then 5, then 1 to 4, because 5 and 6 are special cases of the four quadrants. A cross is a close on the other side of the AVWAP from the session before. Volume is compared with the average of the same ${a.days} sessions the AVWAP covers. Flat volume is within ${pct(r.flat_volume, 0)} of that average; consolidating is the last ${r.chop_bars} closes spanning no more than ${r.chop_atr} x ATR(${r.atr_days}), with the latest within that distance of the AVWAP (ATR now ${fx(l.atr)}). All of these are set in app/config.py.</div>
+    </details>
+    <div class="note">"Institutional" is an inference from price against the volume-weighted average and from volume; the data does not show who traded. The matrix is a rule-of-thumb read of two numbers, not a forecast or advice.</div>
+  </div>`;
+}
 
 // ---------------------------------------------------------------- flows
 function renderFlows(f) {

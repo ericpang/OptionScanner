@@ -28,14 +28,20 @@
   <section id="valuation"></section>
   <section id="thesis"></section>
   <section id="metrics"></section>
+  <section id="peers"></section>
   <section id="chartsec" hidden>
     <h2>Price chart</h2>
-    <div class="ranges" id="ranges">
-      <button data-r="6m">6M</button><button data-r="1y" class="on">1Y</button>
-      <button data-r="2y">2Y</button><button data-r="5y">5Y</button>
+    <div class="chartbar">
+      <div class="ranges" id="ranges">
+        <button data-r="6m">6M</button><button data-r="1y" class="on">1Y</button>
+        <button data-r="2y">2Y</button><button data-r="5y">5Y</button>
+      </div>
+      <label class="avwapctl" title="The anchored VWAP starts this many trading days before the latest closed session">AVWAP anchored
+        <input id="avwapdays" type="number" min="5" max="500" step="1" value="20" aria-label="AVWAP anchor, in trading days back"> trading days back</label>
     </div>
     <div id="chart" class="chart"></div>
     <div id="chartsig" class="note"></div>
+    <div id="avwapinsight"></div>
   </section>
   <section id="flows"></section>
   <section id="options"></section>

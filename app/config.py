@@ -14,6 +14,14 @@ def _load_env() -> None:
             os.environ.setdefault(k.strip(), v.strip())
 
 
+def _clamp_int(raw, default: int, lo: int, hi: int) -> int:
+    """An integer setting from the environment: held within [lo, hi], or the default when it is not a number."""
+    try:
+        return max(lo, min(hi, int(float(raw))))
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
 _load_env()
 
 DATA_MODE = os.environ.get("DATA_MODE", "cli").lower()  # cli | demo
@@ -38,6 +46,17 @@ VALUE_AREA = 0.70
 EMA_PERIODS = (20, 50, 200)
 EMA_WARMUP = 250
 
+# ---- anchored VWAP and its volume matrix (avwap.py) ---------------------------------------------------
+AVWAP_MIN_DAYS = 5
+AVWAP_MAX_DAYS = 500
+# The AVWAP is anchored this many trading days before the latest closed session. This is only the default: the chart
+# has a box to change it, and /api/chart takes `days`.
+AVWAP_DAYS = _clamp_int(os.environ.get("AVWAP_DAYS"), 20, AVWAP_MIN_DAYS, AVWAP_MAX_DAYS)
+AVWAP_FLAT_VOLUME = 0.20    # volume within this share of its average is "flat" (the chop-zone rule)
+AVWAP_CHOP_BARS = 5         # "consolidating at the AVWAP": the latest closes span no more than AVWAP_CHOP_ATR average
+AVWAP_CHOP_ATR = 1.0        # true ranges, and the latest is within that of the line (about 6% of sessions at 20 days)
+AVWAP_ATR_DAYS = 14
+
 # Assumptions used for the ROIC vs. WACC test (stated in the UI)
 RISK_FREE = 0.043
 EQUITY_PREMIUM = 0.05
@@ -58,6 +77,25 @@ T = {
     "altman": (2.99, 1.81),
     "piotroski": (7, 3),
 }
+
+# ---- industry comparison (benchmarks.py) ------------------------------------------------------------
+BENCH_MIN_COMPANIES = 5      # an industry median over fewer companies than this is flagged as a thin sample
+BENCH_VALUE_TOLERANCE = 0.10  # the percentile ranks Longbridge's own figure for the company, so it is shown only when
+                              # that figure is within this share of the one on the metric card
+
+# ---- peer comparison (peers.py, peerstore.py) -------------------------------------------------------
+BENCH_PEERS = 10             # the peer group: the companies in the stock's industry closest to it in market cap
+BENCH_SPARES = 6             # more candidates, tried in turn when a peer's data cannot be used
+BENCH_MIN_PEERS = 3          # a peer median needs at least this many peers with a figure for that metric
+BENCH_WORKERS = 2            # peers fetched at once; the statements endpoint allows about 2 calls a second in all
+# A peer's computed figures are reused this long. A company's fundamentals change a quarter at a time and a peer costs
+# about a dozen CLI calls to fetch. 0 means they are never reused.
+PEER_CACHE_SECONDS = _clamp_int(os.environ.get("PEER_CACHE_DAYS"), 7, 0, 365) * 86400
+# A peer that could not be fetched (no statements for it, a timeout) is not tried again for this long, so a repeat search
+# is not slowed by it. Only remembered when enough other peers worked: a down service must not be remembered.
+PEER_RETRY_SECONDS = 3600
+# The currency a market's shares trade in, to spot statements reported in another one (an ADR, say).
+MARKET_CURRENCY = {"US": "USD", "HK": "HKD", "SH": "CNY", "SZ": "CNY", "SG": "SGD"}
 
 # ---- fair value (valuation.py) ----------------------------------------------------------------------
 TERMINAL_GROWTH = 0.03      # long-run growth after the fade; never above the risk-free rate

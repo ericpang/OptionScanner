@@ -60,9 +60,16 @@ def filings(symbol: str):
     return _run(service.get_filing_text, symbol)
 
 
+@app.get("/api/peers")
+def peers(symbol: str, refresh: bool = False):
+    """The stock against its industry peers. The first search of an industry takes about 40 seconds."""
+    return _run(service.get_peers, symbol, refresh)
+
+
 @app.get("/api/chart")
-def chart(symbol: str, range: str = "1y", bins: int = Query(config.PROFILE_BINS, ge=10, le=120)):
-    return _run(service.get_chart, symbol, range, bins)
+def chart(symbol: str, range: str = "1y", bins: int = Query(config.PROFILE_BINS, ge=10, le=120),
+          days: int = Query(config.AVWAP_DAYS, ge=config.AVWAP_MIN_DAYS, le=config.AVWAP_MAX_DAYS)):
+    return _run(service.get_chart, symbol, range, bins, days)
 
 
 @app.get("/api/flows")

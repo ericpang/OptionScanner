@@ -3,6 +3,8 @@ import math
 import re
 from typing import Iterable, Optional
 
+SYMBOL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_]{0,14}(\.[A-Za-z])?\.[A-Za-z]{2,3}$")  # allows share classes: BRK.B.US
+
 
 def num(x) -> Optional[float]:
     if x is None or isinstance(x, bool):
