@@ -124,7 +124,7 @@ function renderAnalysis(a) {
   const s = a.snapshot;
   $("header").innerHTML = `<div class="hdr">
     <div><span class="nm">${esc(s.name)}</span><span class="k">${esc(s.symbol)} ${esc(s.industry || "")}</span></div>
-    <div><span class="px">${fx(s.price)}</span><span class="k">${esc(s.currency || "")} last</span></div>
+    <div><span class="px">${fx(s.price)}</span>${s.extended ? `<span class="ext" title="${esc(s.extended.session)} price">(${fx(s.extended.price)})</span>` : ""}<span class="k">${esc(s.currency || "")} last</span></div>
     <div><b>${big(s.market_cap)}</b><span class="k">market cap</span></div>
     <div><b>${fx(s.pe, 1)} / ${fx(s.pb, 2)}</b><span class="k">P/E, P/B (quoted)</span></div>
     <div><b>${fx(s.low52)} - ${fx(s.high52)}</b><span class="k">52-week range</span></div></div>`;

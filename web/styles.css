@@ -33,7 +33,7 @@ button.on { background: var(--accent); border-color: var(--accent); color: #fff;
 .m.good { border-left-color: var(--good); } .m.bad { border-left-color: var(--bad); } .m.warn { border-left-color: var(--warn); }
 .m .l { font-size: 12px; color: var(--muted); } .m .v { font-size: 20px; font-weight: 650; } .m .s { font-size: 12px; color: var(--muted); }
 .hdr { display: flex; flex-wrap: wrap; gap: 8px 28px; align-items: baseline; margin-top: 18px; }
-.hdr .px { font-size: 30px; font-weight: 700; } .hdr .nm { font-size: 18px; font-weight: 600; }
+.hdr .px { font-size: 30px; font-weight: 700; } .hdr .ext { font-size: 16px; opacity: .7; margin-left: 6px; } .hdr .nm { font-size: 18px; font-weight: 600; }
 .hdr span.k { color: var(--muted); font-size: 12px; display: block; }
 .two { display: grid; gap: 14px; grid-template-columns: 1fr 1fr; }
 @media (max-width: 760px) { .two { grid-template-columns: 1fr; } }

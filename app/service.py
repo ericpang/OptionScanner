@@ -21,7 +21,7 @@ def _klines(d: Data, sym: str):
 
 
 def _snapshot(quote: dict) -> dict:
-    keys = ("symbol", "name", "currency", "price", "market_cap", "pe", "pb", "high52", "low52", "industry")
+    keys = ("symbol", "name", "currency", "price", "market_cap", "pe", "pb", "high52", "low52", "industry", "extended")
     return {k: quote.get(k) for k in keys}
 
 

@@ -247,6 +247,23 @@ class CliProvider:
             name = None
         return name or _find(prof, "industry", "sector", "industryname") or ""
 
+    @staticmethod
+    def _extended(q) -> Optional[dict]:
+        """The most recent pre-market / post-market / overnight print in a quote, or None when it is over 18h old."""
+        best, best_t = None, None
+        for key, label in (("pre_market", "pre-market"), ("post_market", "post-market"), ("overnight", "overnight")):
+            sec = q.get(key) if isinstance(q, dict) else None
+            px, ts = num((sec or {}).get("last")), (sec or {}).get("timestamp")
+            try:
+                t = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            if px and (best_t is None or t > best_t):
+                best, best_t = {"price": px, "session": label, "timestamp": str(ts)}, t
+        if best_t is None or (datetime.now(timezone.utc) - best_t).total_seconds() > 18 * 3600:
+            return None
+        return best
+
     def quote(self, symbol):
         q = self.run("quote", symbol)
         q = q[0] if isinstance(q, list) and q else q
@@ -267,7 +284,7 @@ class CliProvider:
         mcap = num(_find(ci, "mktcap", "totalmarketvalue", "marketcap"))
         return {
             "symbol": symbol, "name": prof.get("name") or prof.get("company_name") or symbol,
-            "currency": _find(q, "currency") or "", "price": price,
+            "currency": _find(q, "currency") or "", "price": price, "extended": self._extended(q),
             "industry": self._industry(symbol, prof),
             "market_cap": mcap, "shares": None,  # not derived from mcap/price: that would make the market-cap check circular
             "pe": num(_find(ci, "pe", "pettm")), "pb": num(_find(ci, "pb")), "ps": None,
