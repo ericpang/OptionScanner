@@ -149,6 +149,9 @@ class DemoProvider:
     def dividends(self, symbol):
         return {"years_growth": int(_rng(symbol + "dv").integers(0, 15))}
 
+    def sec_disclosures(self, symbol):
+        return None   # synthetic data has no filings
+
     def insider(self, symbol):
         rng = _rng(symbol + "in")
         out, d = [], date.today()

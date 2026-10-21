@@ -42,9 +42,22 @@ def health():
     return {"ok": True, "mode": get_data().mode}
 
 
+@app.post("/api/refresh")
+def refresh(symbol: str):
+    """Drop the ticker's cached data (memory and disk); the page then searches again and fetches live."""
+    sym = service.check_symbol(symbol)
+    get_data().refresh(sym)
+    return {"ok": True, "symbol": sym}
+
+
 @app.get("/api/analyze")
 def analyze(symbol: str):
     return _run(service.analyze, symbol)
+
+
+@app.get("/api/filings")
+def filings(symbol: str):
+    return _run(service.get_filing_text, symbol)
 
 
 @app.get("/api/chart")

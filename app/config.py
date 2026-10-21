@@ -17,12 +17,16 @@ def _load_env() -> None:
 _load_env()
 
 DATA_MODE = os.environ.get("DATA_MODE", "cli").lower()  # cli | demo
-CACHE_TTL = int(os.environ.get("CACHE_TTL_SECONDS", "900"))
+# In-memory cache lifetimes (app/data.py). Freshness is set by DISK_CACHE_MINUTES; memory never outlives the disk cache.
+MEMORY_TTL = 900   # synthetic demo data, which has no disk cache
+DEDUPE_TTL = 5     # live data with the disk cache off: just long enough for panels loading together to share one fetch
 FAIL_TTL = 45  # a failed call is remembered this long, so a rate-limited source is not hit again by every panel
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 # Per-ticker cache files in DATA_DIR (app/snapshot.py): a search within this many minutes of the last fetch reuses it.
 DISK_CACHE_SECONDS = int(float(os.environ.get("DISK_CACHE_MINUTES", "30")) * 60)   # 0 turns the disk cache off
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+# The SEC refuses requests that do not say who is asking: your name and email, e.g. "Jane Doe jane@example.com".
+SEC_USER_AGENT = os.environ.get("SEC_USER_AGENT", "").strip()
+GEMINI_API_KEY =os.environ.get("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")  # any model your key can use
 CLI_TIMEOUT = 60
 

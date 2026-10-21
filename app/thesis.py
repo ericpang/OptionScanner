@@ -41,6 +41,11 @@ def _pct(x):
     return "n/a" if x is None else f"{x:.1%}"
 
 
+def summary(n_bull: int, n_bear: int, quality: dict) -> str:
+    return (f"{n_bull} supporting points and {n_bear} cautionary points from the metrics; "
+            f"{quality['passing']} of {quality['applicable']} quality scorecards pass. Reference only, not advice.")
+
+
 def build(metrics: dict, quality: dict, buffett: dict, graham: dict, chart: dict, flows: dict, quote: dict,
           valuation: Optional[dict] = None) -> dict:
     bull, bear = [], []
@@ -208,8 +213,7 @@ def build(metrics: dict, quality: dict, buffett: dict, graham: dict, chart: dict
 
     verdict = {
         "tag": buffett["tag"], "holding_period": buffett["holding_period"],
-        "summary": f"{len(bull)} supporting points and {len(bear)} cautionary points from the metrics; "
-                   f"{quality['passing']} of {quality['applicable']} quality scorecards pass. Reference only, not advice.",
+        "summary": summary(len(bull), len(bear), quality),
     }
     return {"bull": bull, "bear": bear, "levels": levels, "verdict": verdict, "price": px}
 

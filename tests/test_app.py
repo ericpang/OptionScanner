@@ -418,12 +418,50 @@ def test_unavailable_insider_data_is_not_treated_as_no_selling():
     assert ins["m3"] is None and ins["m6"] is None and ins["m12"] is None
     assert any("Insider data unavailable" in n for n in a["quality"]["graham"]["dynamic_notes"])
     mg = a["quality"]["buffett"]["evidence"]["management"]
-    assert any(x.startswith("n/a") and "Insiders" in x for x in mg)               # not a PASS
+    assert any(x.startswith("n/a") and "Insider" in x for x in mg)                # not a PASS
     assert service.get_flows(d, "AAPL.US")["reported"]["insider"]["net_6m"] is None
     # and when the feed works but there were no trades, that is a real zero
     d2 = Data()
     d2.p.insider = lambda sym: []
     assert service.analyze(d2, "AAPL.US")["metrics"]["extra"]["insider_net"]["m6"] == 0
+
+
+def test_buffett_missing_inputs_show_na_and_are_left_out_of_the_score():
+    import copy
+    from app import buffett
+    d = Data()
+    st, quote = d.call("statements", "AAPL.US"), dict(d.call("quote", "AAPL.US"))
+    m = service.analyze(d, "AAPL.US")["metrics"]
+    base = buffett.analyze(st, quote, m, [], 0.05)
+    assert not any(x.startswith("n/a") for x in base["evidence"]["financials"])
+    s = copy.deepcopy(st)
+    for p in (s["annual"], s["quarterly"]):
+        for row in p:
+            row["total_liabilities"] = None                      # the balance sheet's liabilities are missing
+    bf = buffett.analyze(s, quote, m, [], 0.05)
+    assert "n/a: Liabilities at most 50% of assets" in bf["evidence"]["financials"]   # not a fail
+    assert buffett._scaled({"a": True, "b": None, "c": None}, 5, 0) == 5                # one known test, passed
+    assert buffett._scaled({"a": None}, 4, 1) is None
+
+
+def test_buffett_insider_test_fails_only_for_heavy_net_selling():
+    import copy
+    from app import buffett
+    d = Data()
+    st, quote = d.call("statements", "AAPL.US"), dict(d.call("quote", "AAPL.US"))
+    m = copy.deepcopy(service.analyze(d, "AAPL.US")["metrics"])
+    mcap = quote["market_cap"]
+
+    def verdict(net, cap=mcap):
+        m["extra"]["insider_net"]["m12"] = net
+        q = dict(quote, market_cap=cap)
+        line = next(x for x in buffett.analyze(st, q, m, [], 0.05)["evidence"]["management"] if buffett.INSIDER_TEST in x)
+        return line.split(":")[0]
+    assert verdict(5e6) == "PASS"                                   # net buying
+    assert verdict(-0.0005 * mcap) == "PASS"                        # routine selling, 0.05% of market cap
+    assert verdict(-0.002 * mcap) == "fail"                         # heavy selling, 0.2%
+    assert verdict(-1e6, cap=None) == "n/a"                         # selling, but no market cap to judge it against
+    assert verdict(None) == "n/a"                                   # feed unavailable
 
 
 def test_buffett_star_average_rounds_half_up():

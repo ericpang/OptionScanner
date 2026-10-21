@@ -365,6 +365,48 @@ def test_the_page_has_a_place_for_the_cache_note():
     assert 'id="cachenote"' in c.get("/").text and "function noteCache(" in c.get("/static/app.js").text
 
 
+# ---------------------------------------------------------------- the memory cache follows the disk cache
+def test_memory_lifetime_never_exceeds_the_disk_lifetime_and_live_data_without_a_disk_cache_is_held_only_briefly(tmp_path):
+    long_store, short_store = SnapshotStore(tmp_path, TTL), SnapshotStore(tmp_path, 60)
+    assert Data(Provider(), long_store)._memory_ttl() == config.MEMORY_TTL     # 30 min disk: memory keeps its own cap
+    assert Data(Provider(), short_store)._memory_ttl() == 60                   # shorter disk lifetime wins
+    assert Data(Provider())._memory_ttl() == config.DEDUPE_TTL                 # live data, disk cache off
+    assert Data(DemoProvider())._memory_ttl() == config.MEMORY_TTL             # synthetic data is free to keep
+
+
+def test_without_a_disk_cache_a_later_search_fetches_live_again(monkeypatch):
+    p, now = Provider(), [1000.0]
+    monkeypatch.setattr(D.time, "time", lambda: now[0])
+    d = Data(p)
+    d.call("quote", "AAPL.US"); d.call("quote", "AAPL.US")
+    assert p.n["quote"] == 1                                                   # concurrent/immediate repeats share one fetch
+    now[0] += config.DEDUPE_TTL + 1
+    d.call("quote", "AAPL.US")
+    assert p.n["quote"] == 2                                                   # a new search is not answered from memory
+
+
+# ---------------------------------------------------------------- forcing a refresh
+def test_refresh_drops_the_tickers_file_and_memory_so_the_next_search_fetches_live(env):
+    d = server(env)
+    s = d.session("AAPL.US"); service.analyze(s, "AAPL.US"); s.save_snapshot()
+    assert env.store._files("AAPL.US")
+    first = sum(d.p.n.values())
+    d.refresh("AAPL.US")
+    assert not env.store._files("AAPL.US") and not any("AAPL.US" in k[1:] for k in d.cache)
+    s = d.session("AAPL.US"); service.analyze(s, "AAPL.US")
+    assert sum(d.p.n.values()) > first                               # fetched again, not answered from either cache
+
+
+def test_refresh_endpoint_leaves_other_tickers_alone(env, monkeypatch):
+    d = Data(Provider(), env.store)
+    monkeypatch.setattr(D, "_instance", d)
+    for sym in ("AAPL.US", "MSFT.US"):
+        s = d.session(sym); service.get_flows(s, sym); s.save_snapshot()
+    r = TestClient(app).post("/api/refresh", params={"symbol": "aapl.us"})
+    assert r.status_code == 200 and r.json()["symbol"] == "AAPL.US"
+    assert not env.store._files("AAPL.US") and env.store._files("MSFT.US")
+
+
 # ---------------------------------------------------------------- when the cache is switched on
 def test_demo_mode_and_a_zero_lifetime_never_use_the_disk_cache(monkeypatch):
     monkeypatch.setattr(D, "_instance", None)

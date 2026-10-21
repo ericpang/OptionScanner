@@ -54,6 +54,8 @@ const card = (label, value, sub = "", cls = "") =>
 
 document.addEventListener("DOMContentLoaded", () => {
   $("form").addEventListener("submit", (e) => { e.preventDefault(); run($("symbol").value); });
+  $("refresh").addEventListener("click", refreshData);
+  $("cachenote").addEventListener("click", (e) => { if (e.target.closest("#refresh2")) refreshData(); });
   $("ranges").addEventListener("click", async (e) => {
     const b = e.target.closest("button");
     if (!b || !current.symbol) return;
@@ -65,14 +67,27 @@ document.addEventListener("DOMContentLoaded", () => {
   if (q) { $("symbol").value = q; run(q); }
 });
 
+// Discard the ticker's cached data (server memory and disk), then search again so everything is fetched live.
+async function refreshData() {
+  const symbol = current.symbol;
+  if (!symbol) return;
+  $("refresh").disabled = true;
+  try {
+    const r = await fetch(`/api/refresh?symbol=${encodeURIComponent(symbol)}`, { method: "POST" });
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `Refresh failed (${r.status})`);
+  } catch (err) { setStatus(err.message, true); $("refresh").disabled = false; return; }
+  run(symbol);
+}
+
 async function run(raw) {
   const symbol = (raw || "").trim().toUpperCase();
   if (!symbol) return;
+  $("refresh").disabled = false;
   ensureSections();
   ["header", "recon", "quality", "valuation", "thesis", "metrics", "flows", "options", "news", "sources", "mode", "cachenote"].forEach((i) => ($(i).innerHTML = ""));
   $("chartsec").hidden = true;
   setStatus(`Analyzing ${symbol}...`);
-  current = { symbol, range: "1y", chart: null, flows: null, cache: null };
+  current = { symbol, range: "1y", chart: null, flows: null, cache: null, filing: null };
   [...$("ranges").children].forEach((x) => x.classList.toggle("on", x.dataset.r === "1y"));
   history.replaceState(null, "", `?symbol=${encodeURIComponent(symbol)}`);
 
@@ -89,6 +104,8 @@ async function run(raw) {
   const res = await Promise.allSettled(jobs);
   const errs = res.filter((r) => r.status === "rejected").map((r) => r.reason.message);
   setStatus(errs.length ? [...new Set(errs)].join(" | ") : "", errs.length > 0);
+  // After the other panels: the insider-trades lookup also queries SEC EDGAR, and the SEC rate-limits per address.
+  api(`/api/filings?symbol=${symbol}`).then(renderFilingText).catch(() => {});
   loadOptions();  // after the other panels, so the option scan does not compete with them for data calls
 }
 
@@ -115,7 +132,8 @@ function renderCacheNote() {
   const t0 = Date.parse(c.as_of), expires = at(t0 + c.ttl_seconds * 1000);
   $("cachenote").innerHTML = `<div class="banner info"><b>Data fetched from cache</b> as of ${esc(at(t0) || c.as_of)} (${esc(ageText(c.age_seconds))} ago).`
     + (c.live ? ` ${c.live} item${c.live === 1 ? " was" : "s were"} not in the cache and fetched live.` : "")
-    + (expires ? ` Searching again after ${esc(expires)} fetches fresh data.` : "") + `</div>`;
+    + (expires ? ` Searching again after ${esc(expires)} fetches fresh data, or ` : " ")
+    + `<button type="button" id="refresh2">refresh now</button></div>`;
 }
 
 // ---------------------------------------------------------------- analysis
@@ -173,7 +191,34 @@ function renderQuality(q) {
    <div class="card"><h3>Graham cigar-butt analysis</h3>${graham(g)}</div></div>`;
 }
 
+// Morningstar's Fair Value Estimate is proprietary and has no public API, so it is typed in from morningstar.com and
+// kept in this browser only, per symbol.
+const msKey = (sym) => `msfve:${sym}`;
+const msGet = (sym) => { try { const x = parseFloat(localStorage.getItem(msKey(sym))); return x > 0 ? x : null; } catch { return null; } };
+const msSet = (sym, x) => { try { x > 0 ? localStorage.setItem(msKey(sym), String(x)) : localStorage.removeItem(msKey(sym)); } catch { /* storage blocked: the value just is not remembered */ } };
+
+function renderMorningstar(snap) {
+  if (!snap) return;
+  const sym = snap.symbol, px = snap.price, fve = msGet(sym);
+  const ratio = fve && px ? px / fve : null;
+  const out = fve && px ? `<div class="hdr" style="margin-top:10px"><div><span class="px">${fx(fve)}</span><span class="k">Morningstar fair value estimate (entered by you)</span></div>
+      <div><b>${fx(ratio, 2)}</b><span class="k">price / fair value</span></div>
+      <div><span class="tag ${ratio <= 0.95 ? "good" : ratio <= 1.15 ? "warn" : "bad"}">${ratio <= 0.95 ? "below the estimate" : ratio <= 1.15 ? "near the estimate" : "above the estimate"}</span><span class="k">${ratio <= 1 ? "margin of safety " + ((1 - ratio) * 100).toFixed(0) + "%" : "price is " + ((ratio - 1) * 100).toFixed(0) + "% above the estimate"}</span></div></div>` : "";
+  $("valuation").insertAdjacentHTML("beforeend", `<div class="card" id="msfve" style="margin-top:12px"><h3>Morningstar fair value estimate</h3>
+    <form id="msform"><input id="msval" type="number" min="0" step="0.01" placeholder="e.g. 185.00" value="${fve ?? ""}" aria-label="Morningstar fair value estimate" style="width:140px">
+    <button type="submit">Save</button>${fve ? ` <button type="button" id="msclear">Clear</button>` : ""}</form>${out}
+    <div class="note">Morningstar's fair value estimate is its own analysts' number and is not available from any free data source, so this app cannot fetch it. Look the ticker up on morningstar.com, type the figure here (in ${esc(snap.currency || "the listing currency")}), and it is compared with the price. It is saved in this browser only and is not part of the app's scoring.</div></div>`);
+  $("msform").addEventListener("submit", (e) => { e.preventDefault(); msSet(sym, parseFloat($("msval").value)); $("msfve").remove(); renderMorningstar(snap); });
+  const clr = $("msclear");
+  if (clr) clr.addEventListener("click", () => { msSet(sym, null); $("msfve").remove(); renderMorningstar(snap); });
+}
+
 function renderValuation(v, snap) {
+  renderValuationModel(v, snap);
+  renderMorningstar(snap);
+}
+
+function renderValuationModel(v, snap) {
   if (!v || !v.applicable) { $("valuation").innerHTML = `<h2>Fair value estimate</h2><div class="card"><p>${esc((v && v.note) || "Not available.")}</p></div>`; return; }
   const hl = v.headline, px = v.price;
   const vsTag = (x) => (x === null || x === undefined ? "" : x > 0 ? "good" : "bad");
@@ -206,18 +251,58 @@ function graham(g) {
   <p>${esc(g.holding_view)}</p><p class="note">${g.summary.map(esc).join(" ")}</p>`;
 }
 
+// The bear case: every concern the data shows, grouped by theme, each with a rating and the figures behind it.
+function renderBear(r, fallback) {
+  const sevTag = { high: "bad", medium: "warn", low: "" };
+  if (!r || !r.items.length) return `<div class="card col bear"><h3 class="r">Bear case (0)</h3><p class="note">${fallback}</p></div>`;
+  const cats = [...new Set(r.items.map((x) => x.category))];
+  const body = cats.map((c) => `<h4 style="margin:12px 0 2px">${esc(c)}</h4>` + r.items.filter((x) => x.category === c).map((x) =>
+    `<div class="pt"><b>${esc(x.title)} <span class="tag ${sevTag[x.severity]}">${esc(x.severity)}</span></b>
+      <ul class="plain">${x.facts.map((f) => `<li>${esc(f)}</li>`).join("")}</ul><span><em>[${esc(x.source)}]</em></span></div>`).join("")).join("");
+  return `<div class="card col bear"><h3 class="r">Bear case (${r.items.length})</h3>
+    <p class="note">${r.counts.high} high, ${r.counts.medium} medium, ${r.counts.low} low. ${esc(r.note)}</p>${body}</div>`;
+}
+
+// What the data cannot show: the risks that live in the company's own filings.
+function renderNotMeasured(r) {
+  if (!r) return "";
+  const filings = r.filings.length ? ` Latest filings: ${r.filings.map((f) => `<a href="${esc(f.url)}" target="_blank" rel="noopener">${esc(f.type)} ${esc(f.filed_at)}</a>`).join(", ")}.` : "";
+  return `<div class="card" style="margin-top:12px"><h3>Not measured by this app</h3>
+    <p class="note">These risks come from the company's own disclosures and are not in the data sources, so none is scored or guessed at. Check the filings' risk-factor section and the notes to the financial statements.${filings}</p>
+    <ul class="plain">${r.not_measured.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>
+    <div id="filingtext"><p class="note">Reading the latest filings from SEC EDGAR...</p></div></div>`;
+}
+
+// Verbatim text from the latest 10-K and 10-Q: the risk-factor summary and any sentence that puts a percentage on customers.
+function renderFilingText(got) {
+  if (got && got.symbol === current.symbol) current.filing = got;   // the filings can arrive before the thesis section they sit in, so keep them
+  const f = current.filing, box = $("filingtext");
+  if (!f || !box) return;
+  if (f.status !== "ok") { box.innerHTML = `<p class="note">${esc(f.message)}</p>`; return; }
+  const links = f.filings.map((x) => `<a href="${esc(x.url)}" target="_blank" rel="noopener">${esc(x.form)} filed ${esc(x.filed)}</a>`).join(", ");
+  const conc = f.concentration.length ? f.concentration.map((c) => `<li>${esc(c.text)} <em>[${esc(c.form)} ${esc(c.filed)}]</em></li>`).join("")
+    : `<li class="note">No sentence giving a customer's share of revenue was found by the text search. Read the filing's risk factors and its concentration note.</li>`;
+  const summ = f.risk_summary.length ? `<h4 style="margin:12px 0 2px">The company's own summary of its risk factors</h4><ul class="plain">${f.risk_summary.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>`
+    : `<p class="note">No "Summary of Risk Factors" section was found in the annual report; read Item 1A directly.</p>`;
+  box.innerHTML = `<h4 style="margin:12px 0 2px">From the filings: ${links}</h4>
+    <p class="note">Sentences copied from the filings by a text search, not scored or paraphrased. The search can miss a disclosure or catch an unrelated sentence, so confirm in the filing.</p>
+    <h4 style="margin:12px 0 2px">Customer concentration</h4><ul class="plain">${conc}</ul>${summ}`;
+}
+
 function renderThesis(a) {
   const pts = (arr, none) => arr.length ? arr.map((p) => `<div class="pt"><b>${esc(p.title)}</b><span>${esc(p.evidence)} <em>[${esc(p.source)}]</em></span></div>`).join("") : `<p class="note">${none}</p>`;
   $("thesis").innerHTML = `<h2>Bull and bear case</h2>
   <div class="two">
    <div class="card col bull"><h3 class="b">Bull case (${a.bull.length})</h3>${pts(a.bull, "No supporting points met the rules.")}</div>
-   <div class="card col bear"><h3 class="r">Bear case (${a.bear.length})</h3>${pts(a.bear, "No cautionary points met the rules.")}</div></div>
+   ${renderBear(a.risks, "No cautionary points met the rules.")}</div>
+  ${renderNotMeasured(a.risks)}
   <div class="card" style="margin-top:12px"><h3>Verdict: <span class="tag warn">${esc(a.verdict.tag)}</span></h3>
    <p>${esc(a.verdict.summary)}</p>
    ${a.narrative ? `<p class="narr">${esc(a.narrative)}</p>` : ""}
    <h3>Reference price levels</h3>
    <table>${a.levels.map((l) => `<tr><td>${esc(l.label)}</td><td>${fx(l.price)}</td><td>${pct(l.price / a.snapshot.price - 1)} vs price</td></tr>`).join("")}</table>
    <div class="note">Levels are reference points from analyst targets, the volume profile, Graham and the 52-week range. They are not forecasts.</div></div>`;
+  renderFilingText();
 }
 
 function renderMetrics(m, snap) {

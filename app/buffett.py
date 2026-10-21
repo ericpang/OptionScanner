@@ -9,6 +9,12 @@ from .quality import roic_history
 from .util import mean, num, sdiv, vals
 
 
+# Executives at large companies sell stock steadily (vesting awards, tax cover, pre-set 10b5-1 plans), so "any net
+# selling" fails almost every large company. Only selling above this share of market cap over 12 months counts against it.
+INSIDER_SELL_MAX = 0.001
+INSIDER_TEST = "Insider net selling under 0.1% of market cap (12 months)"
+
+
 def _stars(v, cuts, higher_better=True):
     """cuts = 4 ascending thresholds -> 1..5 stars."""
     if v is None:
@@ -20,6 +26,15 @@ def _stars(v, cuts, higher_better=True):
 def _avg_stars(*xs):
     v = [x for x in xs if x is not None]
     return int(sum(v) / len(v) + 0.5) if v else None   # half up; round() would send 4.5 to 4 and 3.5 to 4
+
+
+def _scaled(tests: dict, n: int, base: int):
+    """base + passes, with the passes scaled up to `n` when some tests have no data, so a missing input neither counts
+    as a fail nor lowers the ceiling. None when no test could be run."""
+    known = [v for v in tests.values() if v is not None]
+    if not known:
+        return None
+    return base + int(sum(1 for v in known if v) * n / len(known) + 0.5)
 
 
 def analyze(stm: dict, quote: dict, metrics: dict, insiders: list, wacc_spread) -> dict:
@@ -44,28 +59,35 @@ def analyze(stm: dict, quote: dict, metrics: dict, insiders: list, wacc_spread) 
     roes = vals(metrics["roe"]["history"])
     ta, tl = num(A.get("total_assets")), num(A.get("total_liabilities"))
     fcfs = vals(metrics["fcf_growth"]["series"])
-    tests = {
-        "ROE at least 15% in most years": bool(roes) and sum(1 for x in roes if x >= 0.15) >= max(1, len(roes) * 0.6),
-        "Free cash flow positive every year": bool(fcfs) and all(x > 0 for x in fcfs),
-        "Liabilities at most 50% of assets": (sdiv(tl, ta) or 9) <= 0.5,
-        "Debt/EBITDA under 2x (or net cash)": metrics["debt_to_ebitda"]["net_cash"] or
-        (metrics["debt_to_ebitda"]["gross"] is not None and metrics["debt_to_ebitda"]["gross"] < 2),
-        "Gross margin at least 30%": gm_avg is not None and gm_avg >= 0.30,
+    de = metrics["debt_to_ebitda"]
+    liab = sdiv(tl, ta)
+    tests = {  # None = inputs missing (shown as n/a, left out of the score)
+        "ROE at least 15% in most years": sum(1 for x in roes if x >= 0.15) >= max(1, len(roes) * 0.6) if roes else None,
+        "Free cash flow positive every year": all(x > 0 for x in fcfs) if fcfs else None,
+        "Liabilities at most 50% of assets": None if liab is None else liab <= 0.5,
+        "Debt/EBITDA under 2x (or net cash)": True if de["net_cash"] else None if de["gross"] is None else de["gross"] < 2,
+        "Gross margin at least 30%": None if gm_avg is None else gm_avg >= 0.30,
     }
-    fin = max(1, sum(tests.values()))
-    ev["financials"] = [f"{'PASS' if v else 'fail'}: {k}" for k, v in tests.items()]
+    fin = _scaled(tests, 5, base=0)
+    if fin is not None:
+        fin = max(1, fin)
+    ev["financials"] = [f"{'n/a' if v is None else 'PASS' if v else 'fail'}: {k}" for k, v in tests.items()]
 
     # 3. Management / capital allocation
     sc = ex["share_count_change_3y"]
-    ins12 = ex["insider_net"]["m12"]
+    ins12, mcap = ex["insider_net"]["m12"], num(quote.get("market_cap"))
     mt = {  # None = inputs missing (shown as n/a, not counted as a pass)
         "Share count shrinking over 3 years": None if sc is None else sc < 0,
         "Pays a dividend or buys back stock": (ex["dividend"]["payout"] or 0) > 0 or (ex["buyback_yield"] or 0) > 0,
-        "Insiders not net sellers (12 months)": None if ins12 is None else ins12 >= 0,
+        INSIDER_TEST: None if ins12 is None else ins12 >= 0 or (None if not mcap else -ins12 <= INSIDER_SELL_MAX * mcap),
         "ROIC above cost of capital": None if wacc_spread is None else wacc_spread > 0,
     }
-    mgmt = 1 + sum(1 for v in mt.values() if v is True)
+    mgmt = _scaled(mt, 4, base=1)
     ev["management"] = [f"{'n/a' if v is None else 'PASS' if v else 'fail'}: {k}" for k, v in mt.items()]
+    if ins12 is not None and ins12 < 0:
+        share = f"{-ins12 / mcap:.3%} of market cap" if mcap else "market cap unknown"
+        ev["management"].append(f"Insiders sold a net ${-ins12 / 1e6:,.1f}M over 12 months ({share}). Routine sales by "
+                                f"executives are common, so only selling above {INSIDER_SELL_MAX:.1%} of market cap fails.")
 
     # 4. Valuation (price) -- kept separate from business quality
     pe, fy = metrics["pe_ttm"]["value"], ex["fcf_yield"]

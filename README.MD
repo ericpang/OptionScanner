@@ -27,6 +27,7 @@ All market data comes from [Longbridge](https://open.longbridge.com). The analys
 | Price Chart | Daily candles, EMA 20/50/200, volume and volume profile with POC and value area (see [Price chart](#price-chart-daily-candles-ema-2050200-and-volume-profile)) |
 | Business & Moat | Moat type and width, pricing power, industry runway |
 | Financial Health | ROE history, FCF, leverage, margins, capex intensity |
+| Bear case | One list of every concern the data shows, merged from the rule-based bear points and the broader critic checks, (valuation, slowing growth, leverage and liquidity, earnings quality, dilution, insider selling, price action), grouped by theme, each with the figures behind it and a high / medium / low rating. Risks that only the company's filings can show, such as customer concentration, are listed as not measured, with links to the latest annual and quarterly filings (`app/risks.py`; thresholds are this app's own). With `SEC_USER_AGENT` set in `.env`, the app also reads the latest 10-K and newer 10-Q from SEC EDGAR (`app/sec.py`) and shows, verbatim and unscored, the company's own summary of risk factors and any sentence that gives a customer's share of revenue; it is a text search and can miss or mis-catch, so confirm in the filing |
 | Fair value estimate | App-built DCF, earnings power value and Graham number, a sensitivity grid, and a reverse DCF; explicitly not GF Value (see [Fair value estimate](#fair-value-estimate-not-gf-value)) |
 | Institutional Flows | 13F holder changes, insider trades, large-order capital flow, OBV / CMF, and an Accumulation / Neutral / Distribution read (see [Institutional buying and selling](#institutional-buying-and-selling)) |
 | Options | IV vs HV, term structure and skew, put/call volume, and candidate option trades with payoff, breakevens, Greeks and risk flags; a **Scan** page ranks candidates across a list of symbols (see [Option trade scanner](#option-trade-scanner)) |
@@ -313,6 +314,8 @@ These are shown as reported. The app does **not** classify headlines or posts as
 
 ## Fair value estimate (not GF Value)
 
+**Morningstar fair value estimate.** Morningstar's number is its analysts' own and has no free data source, so the app cannot fetch it. The Fair value section has a box where you type the figure from morningstar.com; the app then shows it with price / fair value and the margin of safety. It is saved per symbol in your browser only, and it is not used in any score.
+
 The page shows an **app-built fair value estimate** under the quality scorecard. It is **not GuruFocus's GF Value**. GF Value is a proprietary number from GuruFocus's own model, and its only legitimate programmatic source is the GuruFocus API, which is for Premium members and needs an API token. The documentation could not be read from here (the site returned 403), so no GuruFocus integration was built. If you later get a token, a GF Value card can be added next to this one.
 
 The estimate uses three methods, all from the financial statements and the quote (`app/valuation.py`):
@@ -456,7 +459,7 @@ There is **no composite score**. Candidates are sorted by a column the user pick
 
 ### Scan mode (many stocks)
 
-`Scan` takes a pasted list of symbols (up to 20) and runs a lighter pipeline per symbol: quote, daily bars for HV, the expiries in the window, one chain per chosen expiry, and one batched `option quote` for the candidate legs. About 8 CLI calls per symbol, within the 10 calls per second limit; results are cached for `CACHE_TTL_SECONDS`.
+`Scan` takes a pasted list of symbols (up to 20) and runs a lighter pipeline per symbol: quote, daily bars for HV, the expiries in the window, one chain per chosen expiry, and one batched `option quote` for the candidate legs. About 8 CLI calls per symbol, within the 10 calls per second limit; results are cached for `DISK_CACHE_MINUTES`.
 
 The results table has one row per candidate across all symbols: symbol, structure, expiry, legs, credit or debit, max loss, return on risk, probability of profit, IV/HV, flags. Optional filters:
 
@@ -547,6 +550,8 @@ How it works:
 - **A failed call is tried again.** It is not saved, so a hiccup such as the SEC rate limit on insider trades is not frozen in for 30 minutes. The exception is a call the app already treats as unimportant: its failure is saved, or every search would repeat it. Today that is the news summary: `longbridge news detail` answers in Markdown, not JSON (checked on CLI 0.26.0 in October 2026), so every summary fails after three attempts, about 2 seconds per article. The news panel therefore shows headlines only and takes about 20 seconds on a live fetch, but a cached one is instant.
 - **Only live data is cached.** Demo mode never writes files. The IV history (`data/iv_history.json`) is added to only when the option chains were fetched live, so a cached page does not stamp today's date on old IV figures.
 - **A file that cannot be read or written never breaks the page.** An unreadable file, or one written by another version of the code (`VERSION` in [app/snapshot.py](app/snapshot.py), to be bumped when a data call changes what it returns), is ignored and replaced. If `data/` cannot be written, the page is built from live data and a warning goes to the server log.
+- **Refresh data button.** The **Refresh data** button next to Analyze (and "refresh now" in the cache note) deletes the ticker's cache file and its in-memory entries, then searches again, so everything is fetched live without waiting for the lifetime to pass. It is `POST /api/refresh?symbol=...`.
+- **`DISK_CACHE_MINUTES` is the only freshness setting.** The in-memory cache never keeps a value longer than the disk cache does. With the disk cache off, live data is held in memory for only a few seconds, so panels loading together share one fetch and every new search fetches live data.
 - **The files are git-ignored** (`data/*.json`). To force a fresh fetch for one ticker, delete its file.
 
 Measured on AAPL.US with the real CLI: the first search took 29 seconds and 65 CLI calls. The same search after restarting the server took 0.2 seconds and 1 CLI call (the SEC-rate-limited insider-trades call, retried by design), and all five panels were identical.
@@ -628,6 +633,7 @@ FastAPI backend (Python)
   ├─ options.py     option chain and quote parsing, OCC symbols, Black-Scholes price and Greeks, IV vs HV, term structure, skew
   ├─ strategies.py  strategy matrix: builds spreads, condors, straddles, calendars from live strikes; payoff, breakevens, model POP
   ├─ option_scan.py market view from the analysis, filters and flags, multi-symbol scan
+  ├─ risks.py       the bear case: concerns with their figures (merged with thesis.py's rule-based points), and the risks the data cannot show
   └─ thesis.py      builds bull/bear lists from the scores, optionally asks Gemini to write the narrative
 ```
 
@@ -714,10 +720,10 @@ If you prefer the Python SDK over the CLI: `pip install longbridge` (see [Python
 Create `.env` in the project root:
 
 ```
+SEC_USER_AGENT=Your Name you@example.com   # optional; lets the app read the latest 10-K / 10-Q from SEC EDGAR (US only)
 GEMINI_API_KEY=...                # optional; GEMINI_MODEL overrides the model (default gemini-2.5-flash)
 DATA_MODE=cli                     # cli | demo (synthetic data, no login needed)
-CACHE_TTL_SECONDS=900             # in-memory cache for data calls
-DISK_CACHE_MINUTES=30             # per-ticker cache files in data/ (see Data cache); 0 = off
+DISK_CACHE_MINUTES=30             # how long fetched data is reused: per-ticker cache files in data/ (see Data cache); 0 = off
 ```
 
 ### 4. Run
@@ -777,6 +783,7 @@ OptionScanner/
 │   ├── option_scan.py       # view, filters, risk flags, multi-symbol scan
 │   ├── snapshot.py          # per-ticker disk cache
 │   ├── config.py            # bull/bear thresholds
+│   ├── risks.py             # the critic: dangers and concerns with facts and figures
 │   └── thesis.py
 ├── data/                    # everything in here is git-ignored
 │   ├── iv_history.json      # daily ATM IV snapshots, builds the IV percentile over time
@@ -860,7 +867,7 @@ When the data cache is on (live mode), every JSON response also carries `cache`,
 - **Piotroski F-Score basis.** The page scores the **latest quarter against the same quarter a year earlier** when it can (all nine tests, with period-end assets in both quarters), and shows the **fiscal-year** score beside it. A fiscal year can be up to three quarters old, which misleads for a company whose business changed fast: NVDA's last fiscal year included a one-off first-quarter charge, so its fiscal-year score was 3 of 8 while the latest quarter scores 5 of 9. GuruFocus scores trailing twelve months against the year before (7 for NVDA); that needs eight quarters of statements and Longbridge returns five, so it cannot be reproduced exactly. Seven of the nine individual tests agree with GuruFocus for NVDA. The two that differ, ROA and asset turnover, are scaled by assets from a year earlier in Piotroski's paper and in GuruFocus, which favours companies whose asset base has just grown fast; the app cannot do that for the year-ago quarter because balance sheets only go back five quarters.
 - **Share counts** are derived from the consensus table (a quarter's net income divided by its EPS; a fiscal year is the mean of its quarters, at least three). This gives the Piotroski "fewer shares" test, the 3-year share count change and per-share NCAV a real input instead of n/a or a market-cap estimate. It is diluted GAAP shares, so it moves with dilution and buybacks.
 - **Which period each scorecard uses** (shown on the page): Piotroski, the latest quarter against the same quarter a year earlier (fiscal-year score alongside); Altman, the latest quarter's balance sheet with trailing-twelve-month EBIT and sales; Sloan accruals, trailing twelve months over the average of the latest and year-ago assets; Magic Formula and Graham debt cover, the latest balance sheet; Beneish, the last fiscal year against the one before (its indices are calibrated on annual data). Before this, Altman, Sloan and Magic Formula used the January fiscal-year balance sheet against today's price, which mixed dates: for NVDA, Altman read 68 instead of 39, Sloan 10.9% instead of 25.4% (inside versus beyond the 25% red-flag line) and Magic Formula return on capital 434% instead of 175%.
-- **Unavailable is not the same as none.** If the insider (Form 4) feed fails, for example from an SEC rate limit, the insider figures show n/a, the Buffett "not net sellers" test shows n/a, and Graham says its insider adjustment was not applied. Before this, a failed lookup was read as "no insider selling", which removed Graham's penalty and passed the Buffett test; a genuinely empty feed (no trades) is still a real zero.
+- **Unavailable is not the same as none.** If the insider (Form 4) feed fails, for example from an SEC rate limit, the insider figures show n/a, the Buffett insider test shows n/a, and Graham says its insider adjustment was not applied. Before this, a failed lookup was read as "no insider selling", which removed Graham's penalty and passed the Buffett test; a genuinely empty feed (no trades) is still a real zero.
 - Buffett star averages round half up (4.5 stars is 5); Python's default rounding sent 4.5 to 4 and 3.5 to 4.
 - The CLI is limited to 10 API calls per second. The backend batches calls and caches them: in memory for 15 minutes, and per ticker on disk for 30 minutes (see [Data cache](#data-cache-per-ticker)).
 - The Graham and Buffett frameworks suit long-horizon investors. For a holding period under 3 years, the app shows a warning that these are not the right lenses.

@@ -1,7 +1,7 @@
 """Orchestrates data fetching and the calculators for each API endpoint."""
 import re
 
-from . import buffett, chart, config, flows, graham, metrics as M, news, quality as Q, reconcile, thesis, valuation
+from . import buffett, chart, config, flows, graham, metrics as M, news, quality as Q, reconcile, risks, thesis, valuation
 from .data import Data, DataError, InputError
 from .util import num
 
@@ -155,12 +155,33 @@ def analyze(d: Data, sym: str) -> dict:
                           "this app's own."}
     val = valuation.build(stm, quote, m, qual)
     th = thesis.build(m, qual, bf, gh, ch, fl, quote, val)
+    crit = risks.build(stm, quote, m, qual, fl, ch, val, d.call("filings", sym, default=[], quiet=True), th["bear"])
+    th["verdict"]["summary"] = thesis.summary(len(th["bull"]), len(crit["items"]), qual)   # the page shows the merged bear case
     base.update(
-        metrics=m, quality=qual, valuation=val, bull=th["bull"], bear=th["bear"], levels=th["levels"], verdict=th["verdict"],
+        metrics=m, quality=qual, valuation=val, bull=th["bull"], bear=th["bear"], risks=crit, levels=th["levels"], verdict=th["verdict"],
         sources=_sources(period, fetched, d.mode),
-        narrative=thesis.narrate({"symbol": sym, "bull": th["bull"], "bear": th["bear"], "verdict": th["verdict"]}),
+        narrative=thesis.narrate({"symbol": sym, "bull": th["bull"], "verdict": th["verdict"],
+                                  "bear": [{"title": x["title"], "evidence": "; ".join(x["facts"]), "source": x["source"]} for x in crit["items"]]}),
         warnings=list(d.warnings))
     return base
+
+
+def get_filing_text(d: Data, sym: str) -> dict:
+    """What the company's own latest filings say about its risks, for the card of risks the numbers cannot show."""
+    if d.mode == "demo":
+        return {"symbol": sym, "status": "demo", "message": "Demo data has no filings."}
+    if not sym.endswith(".US"):
+        return {"symbol": sym, "status": "unsupported", "message": "Filing text is read from SEC EDGAR, so it covers US listings only."}
+    if not config.SEC_USER_AGENT:
+        return {"symbol": sym, "status": "not_configured", "message": "Set SEC_USER_AGENT in .env (your name and email, which the SEC "
+                "requires) and restart the server to read the latest 10-K and 10-Q here."}
+    try:
+        got = d.call("sec_disclosures", sym, optional=False)
+    except DataError as e:
+        return {"symbol": sym, "status": "unavailable", "message": f"The filings could not be read: {e}"}
+    if got is None:
+        return {"symbol": sym, "status": "unavailable", "message": "This company files no annual report with the SEC that could be read."}
+    return {"symbol": sym, "status": "ok", **got}
 
 
 MARKET_CCY = {"US": "USD", "HK": "HKD", "SH": "CNY", "SZ": "CNY", "SG": "SGD"}

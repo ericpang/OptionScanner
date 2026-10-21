@@ -14,7 +14,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
-from . import config
+from . import config, sec
 from .demo import DemoProvider
 from .normalize import finalize, merge_periods, parse_statement
 from .snapshot import MISS, Failure, Snapshot, SnapshotStore
@@ -150,6 +150,13 @@ class CliProvider:
                     time.sleep(0.7)
                     continue
         raise DataError(err)
+
+    def sec_disclosures(self, symbol):
+        """Risk-factor summary and customer-concentration sentences from the latest 10-K and 10-Q (SEC EDGAR)."""
+        try:
+            return sec.disclosures(symbol)
+        except sec.DataError as e:
+            raise DataError(str(e))
 
     # --- statements -------------------------------------------------------------------------------
     def statements(self, symbol):
@@ -531,6 +538,14 @@ class Data:
         if self.store is not None and self.snap is not None:
             self.store.save(self.snap)
 
+    def refresh(self, symbol: str) -> None:
+        """Forget everything held for the ticker, in memory and on disk, so the next request fetches live."""
+        with self._glock:
+            for key in [k for k in self.cache if symbol in k[1:]]:
+                del self.cache[key]
+        if self.store is not None:
+            self.store.discard(symbol)
+
     def cache_info(self) -> Optional[dict]:
         """Where this request's data came from, for the page; None when there is no disk cache."""
         return None if self.store is None or self.snap is None else self.store.describe(self.snap)
@@ -543,6 +558,14 @@ class Data:
     def was_cached(self, name: str, *args) -> bool:
         """True when this call was answered from the ticker's cache file instead of being fetched."""
         return self.snap is not None and (name, *args) in self.snap.served
+
+    def _memory_ttl(self) -> float:
+        """How long the in-memory cache keeps a value. It follows the disk cache's lifetime, so lowering
+        DISK_CACHE_MINUTES (or turning it off) is never undercut by an older copy in memory. Live data with no disk
+        cache is kept only briefly, enough for concurrent panels to share a fetch."""
+        if self.store is not None:
+            return min(config.MEMORY_TTL, self.store.ttl)
+        return config.MEMORY_TTL if self.p.name == "demo" else config.DEDUPE_TTL
 
     def _lock(self, key: tuple) -> threading.Lock:
         with self._glock:
@@ -590,7 +613,7 @@ class Data:
                 return default
             if self.snap is not None:
                 self.snap.add(key, val)   # copied here, before any caller can change `val` in place
-            self.cache[key] = (time.time(), ("ok", val), config.CACHE_TTL)
+            self.cache[key] = (time.time(), ("ok", val), self._memory_ttl())
             return val
 
 

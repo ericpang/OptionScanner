@@ -182,6 +182,15 @@ class SnapshotStore:
         except Exception as e:  # noqa: BLE001
             log.warning("cache: could not save %s: %s", snap.symbol, e)
 
+    def discard(self, symbol: str) -> None:
+        """Delete the ticker's cache file, so the next request fetches everything live. Never raises."""
+        try:
+            with self._lock(symbol):
+                for _, path in self._files(symbol):
+                    path.unlink(missing_ok=True)
+        except OSError as e:
+            log.warning("cache: could not delete the cache for %s: %s", symbol, e)
+
     def _write(self, path: Path, symbol: str, stamp: datetime, calls: dict) -> None:
         """One call per line, so the file stays readable. Written to a temporary file and renamed into place, so a
         reader never sees half a file."""
