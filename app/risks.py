@@ -7,6 +7,7 @@ quarterly filings to read, rather than guessed at. The thresholds are this app's
 """
 from typing import Optional
 
+from . import obv
 from .metrics import fcf_of, latest, latest_bs
 from .util import growth, num, sdiv
 
@@ -177,6 +178,9 @@ def build(stm: dict, quote: dict, metrics: dict, quality: dict, flows: dict, cha
     nr = flows["net_read"]
     if nr["label"] == "distribution":
         add("Price action and sentiment", "medium", "Flow indicators show distribution", "; ".join(nr["signals_against"]), source="Institutional flows")
+    for p in obv.points(chart.get("obv")):
+        if p["side"] == "bear":
+            add("Price action and sentiment", "medium", p["title"], p["evidence"], source="OBV")
     tot = sum(x for x in (ar["buy"], ar["hold"], ar["sell"]) if x)
     if tot and (ar["buy"] or 0) / tot < 0.5:
         add("Price action and sentiment", "low", "Analysts are cautious",

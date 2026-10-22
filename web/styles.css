@@ -52,7 +52,7 @@ button.on { background: var(--accent); border-color: var(--accent); color: #fff;
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
 th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
 th { color: var(--muted); font-weight: 600; }
-.chart { width: 100%; height: 620px; } .ranges { display: flex; gap: 6px; margin-bottom: 6px; }
+.chart { width: 100%; height: 700px; } .ranges { display: flex; gap: 6px; margin-bottom: 6px; }
 .chartbar { display: flex; flex-wrap: wrap; gap: 6px 24px; align-items: center; margin-bottom: 6px; } .chartbar .ranges { margin-bottom: 0; }
 .avwapctl { display: flex; gap: 6px; align-items: center; font-size: 13px; color: var(--muted); }
 .avwapctl input { width: 72px; padding: 6px 8px; }

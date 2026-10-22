@@ -25,7 +25,7 @@ All market data comes from [Longbridge](https://open.longbridge.com). The analys
 | Header | Symbol, price, market cap, PE/PB, 52-week range |
 | Key Metrics | P/E (TTM), PEG, FCF growth, Debt/EBITDA, analyst ratings, operating margin, ROIC, ROE, net income growth, plus the additional metrics (see [Key metrics](#key-metrics)) |
 | Price Chart | Daily candles, EMA 20/50/200, volume and volume profile with POC and value area (see [Price chart](#price-chart-daily-candles-ema-2050200-and-volume-profile)) |
-| Technical insights | The anchored VWAP read of the latest closed session: one of six price-and-volume conclusions, colour-coded; the number of days is configurable (see [Anchored VWAP](#anchored-vwap-avwap-and-the-volume-matrix)) |
+| Technical insights | Two panels under the chart. The anchored VWAP read of the latest closed session: one of six price-and-volume conclusions, colour-coded; the number of days is configurable (see [Anchored VWAP](#anchored-vwap-avwap-and-the-volume-matrix)). And the On-Balance Volume read: price, volume and OBV direction matched to a 27-row table, plus a price/OBV divergence test (see [On-Balance Volume](#on-balance-volume-obv-insights)) |
 | Business & Moat | Moat type and width, pricing power, industry runway |
 | Financial Health | ROE history, FCF, leverage, margins, capex intensity |
 | Bear case | One list of every concern the data shows, merged from the rule-based bear points and the broader critic checks, (valuation, slowing growth, leverage and liquidity, earnings quality, dilution, insider selling, price action), grouped by theme, each with the figures behind it and a high / medium / low rating. Risks that only the company's filings can show, such as customer concentration, are listed as not measured, with links to the latest annual and quarterly filings (`app/risks.py`; thresholds are this app's own). With `SEC_USER_AGENT` set in `.env`, the app also reads the latest 10-K and newer 10-Q from SEC EDGAR (`app/sec.py`) and shows, verbatim and unscored, the company's own summary of risk factors and any sentence that gives a customer's share of revenue; it is a text search and can miss or mis-catch, so confirm in the filing |
@@ -162,13 +162,14 @@ A chart panel sits under the Key Metrics panel.
 
 - **Daily candlesticks**, default range 1 year, with 6M / 1Y / 2Y / 5Y toggles.
 - **EMA 20, 50 and 200** lines in three distinct colours, each toggleable from the legend.
-- **Technical insights**, a panel under the chart: the latest closed session read against an anchored VWAP (see [Anchored VWAP](#anchored-vwap-avwap-and-the-volume-matrix)). The chart itself draws no AVWAP or average-volume line.
+- **Technical insights**, two panels under the chart: the latest closed session read against an anchored VWAP (see [Anchored VWAP](#anchored-vwap-avwap-and-the-volume-matrix)), and the On-Balance Volume read (see [On-Balance Volume](#on-balance-volume-obv-insights)). The chart itself draws no AVWAP or average-volume line; it does draw OBV.
+- **OBV pane** between the candles and the volume bars: the OBV line and its 20-day moving average (dotted), on the same dates. OBV is shifted to start at 0 at the first bar shown, because its running total starts at the beginning of the history and the level means nothing; only its direction does.
 - **Volume bars** in a lower pane, coloured by up or down day.
 - **Volume profile**, a horizontal histogram on the right that shares the price axis with the candles. It marks:
   - **POC** (point of control): the price level with the most volume.
   - **VAH / VAL** (value area high and low): the range holding 70% of the volume. The value area is shaded.
   - Bars inside the value area are drawn darker than those outside.
-- **Signals under the chart**: price vs. each EMA, whether EMA 20/50 and 50/200 have recently crossed (golden or death cross), and where the price sits relative to POC and the value area. These also feed the bull and bear case (for example, price above EMA 200 and above the value area is a bull point; price below EMA 200 and below VAL is a bear point).
+- **Signals under the chart**: price vs. each EMA, whether EMA 20/50 and 50/200 have recently crossed (golden or death cross), and where the price sits relative to POC and the value area. These also feed the bull and bear case (for example, price above EMA 200 and above the value area is a bull point; price below EMA 200 and below VAL is a bear point). The On-Balance Volume read adds its own points (see [On-Balance Volume](#on-balance-volume-obv-insights)).
 
 ### How it is computed
 
@@ -201,7 +202,8 @@ The chart must work in light and dark themes, and the EMA colours must stay dist
     "cross_50_200": "golden | death | none",
     "price_vs_value_area": "above | inside | below"
   },
-  "avwap": { "days": 20, "conclusion": {} }   // see Anchored VWAP below
+  "avwap": { "days": 20, "conclusion": {} },   // see Anchored VWAP below
+  "obv": { "days": 20, "conclusion": {}, "divergence": {}, "series": {} }   // see On-Balance Volume below
 }
 ```
 
@@ -289,6 +291,106 @@ A `status` other than `ok` leaves `latest` and `conclusion` null and gives the r
 - The AVWAP is built from daily bars (one typical price per day), not from every trade, so it approximates the true volume-weighted average cost.
 - "Institutional" is an inference from price against the volume-weighted average and from volume; the data does not show who traded. The matrix is a rule-of-thumb read of two numbers, not a forecast and not advice.
 - Prices are forward-adjusted (see Notes and limits); volume is as reported.
+
+---
+
+## On-Balance Volume (OBV) insights
+
+A second **Technical insights** panel, below the AVWAP one, reads the last 20 closed sessions as three things (price, volume and OBV direction), looks them up in a table with one row for each of the 27 combinations, and runs a separate divergence test between price and OBV. OBV and its 20-day moving average are also drawn in their own pane of the price chart. The code is in [app/obv.py](app/obv.py) and the tests in `tests/test_obv.py` (with the Node harness `tests/obv_card.js`).
+
+**OBV** is a running total of volume: a session's volume is added on an up close and subtracted on a down close (`flows.obv`). Its level depends on where the history starts and means nothing; its direction does.
+
+### The three readings
+
+Each is taken over the last N = 20 closed sessions (`OBV_DAYS`):
+
+| Reading | Rising / increasing | Falling / decreasing | Flat |
+|---|---|---|---|
+| **Price** | The close moved up by more than 1 x ATR(14) over the N sessions (`OBV_FLAT_ATR`) | Moved down by more than that | Moved by no more than that |
+| **Volume** | Average volume over the N sessions is more than 10% above the average of the N before them (`OBV_FLAT_VOLUME`) | More than 10% below it | Within 10% |
+| **OBV** | Its net change over the N sessions is more than 10% of the volume traded over them (`OBV_FLAT_SHARE`) | Less than minus 10% | Within 10% |
+
+The read needs 2 x N = 40 closed sessions of history; with fewer the panel says how many it has and gives no read.
+
+### The table
+
+One row for each of the 27 combinations (price rising, falling or flat; volume increasing, flat or decreasing; OBV rising, falling or flat). The panel highlights the matching row under **How this is decided**.
+
+| Price | Volume | OBV | Market condition | Underlying dynamic | Trading action |
+|---|---|---|---|---|---|
+| Rising | Increasing | Rising | Strong Bullish Trend (green, solid) | Institutional accumulation; buyers in full control. | Buy / Hold longs |
+| Rising | Increasing | Falling | Distribution Into Strength † (red, tinted) | Heavy volume lifts the price, yet net volume is leaving; sellers are using the rally to unload. | Take profits / Tighten stops |
+| Rising | Increasing | Flat | Churning Rally † (yellow) | Price rises on heavy volume but net buying and selling cancel out; the advance is not being absorbed. | Hold with tight stops / Wait for confirmation |
+| Rising | Decreasing | Rising | Low-Volume Float (yellow) | Price drifts up on low liquidity; lack of selling pressure. | Hold longs / Trail stops |
+| Rising | Decreasing | Falling | Bearish Divergence (red, solid) | Smart money is quietly exiting; retail chasing a hollow rally. | Exit longs / Look to Short |
+| Rising | Decreasing | Flat | Exhausted Rally (yellow) | Price ticks higher on alternating low-vol days; no buying backing. | Take partial profits |
+| Rising | Flat | Rising | Steady Advance † (green, tinted) | Price climbs on unchanged volume with buying running ahead of selling. | Hold longs |
+| Rising | Flat | Falling | Unconfirmed Rally † (red, tinted) | Price climbs on unchanged volume while net volume leaves; the rise has no buying behind it. | Take partial profits / Tighten stops |
+| Rising | Flat | Flat | Idle Advance † (yellow) | Price edges up on unchanged volume with no net buying or selling behind it. | Hold longs / Trail stops |
+| Falling | Increasing | Rising | Absorbed Selling † (green, tinted) | Heavy volume pushes the price down, yet net volume is arriving; buyers are soaking up the selling. | Look to Buy reversals / Wait for confirmation |
+| Falling | Increasing | Falling | Strong Bearish Trend (red, solid) | Institutional distribution; aggressive liquidation. | Avoid buying / Short |
+| Falling | Increasing | Flat | Churning Decline † (yellow) | Price falls on heavy volume but net buying and selling cancel out; sellers have not taken control and buyers have not stepped in. | Avoid buying / Wait for base |
+| Falling | Decreasing | Rising | Bullish Divergence (green, solid) | Smart money is absorbing panic selling and accumulating dips. | Look to Buy reversals |
+| Falling | Decreasing | Falling | Selling Exhaustion (yellow) | Price drops but sellers are running out of shares/conviction. | Watch for baseline support |
+| Falling | Decreasing | Flat | Illiquid Drift (yellow) | Price bleeds down purely due to a lack of buyers, not heavy selling. | Stay sidelines / Wait for base |
+| Falling | Flat | Rising | Dip Buying † (green, tinted) | Price slips on unchanged volume while net volume builds; the dips are being bought. | Watch for a reversal |
+| Falling | Flat | Falling | Steady Decline † (red, tinted) | Price falls on unchanged volume with selling running ahead of buying. | Avoid buying / Stay out |
+| Falling | Flat | Flat | Idle Decline † (yellow) | Price slips on unchanged volume with no net buying or selling behind it. | Stay sidelines / Wait for base |
+| Flat | Increasing | Rising | Silent Accumulation (green, tinted) | Large blocks are bought inside a range without spiking price. | Buy the upside breakout |
+| Flat | Increasing | Falling | Silent Distribution (red, tinted) | Large blocks are sold inside a range without crashing price. | Short the downside breakdown |
+| Flat | Increasing | Flat | High-Volume Churn (yellow) | Massive volume trading hands, but net buying/selling cancels out. | Wait for a breakout candle |
+| Flat | Decreasing | Rising | Thin-Volume Accumulation † (green, tinted) | Net buying edges ahead while volume dries up and price holds its range; a quiet build. | Watch for the upside breakout |
+| Flat | Decreasing | Falling | Thin-Volume Distribution † (red, tinted) | Net selling edges ahead while volume dries up and price holds its range. | Watch for the downside breakdown |
+| Flat | Decreasing | Flat | Market Apathy (yellow) | No institutional interest; dead liquidity and zero momentum. | Stay cash / Avoid |
+| Flat | Flat | Rising | Slow Accumulation † (green, tinted) | Buying steadily outweighs selling on unchanged volume while price holds its range. | Watch for the upside breakout |
+| Flat | Flat | Falling | Slow Distribution † (red, tinted) | Selling steadily outweighs buying on unchanged volume while price holds its range. | Watch for the downside breakdown |
+| Flat | Flat | Flat | Absolute Stagnation (yellow) | Complete market freeze. Asset is heavily balanced or illiquid. | Ignore ticker / Stay cash |
+
+**Where the rows come from.** The 13 rows without a † are the framework's own, word for word (Market Apathy is from an earlier version of the framework's table, which the later one replaced with Absolute Stagnation; it is kept because its combination is otherwise empty). The 14 rows marked † are for combinations the framework's table does not list. They are this app's own wording and actions, written in the framework's style and kept deliberately cautious: none is a strong (solid) call, and the panel says so beside any row of this kind it shows. Change them in `RULES` in [app/obv.py](app/obv.py). Colour follows the row's lean: green for the bullish ones, red for the bearish ones, yellow for the cautions and waiting calls.
+
+### Divergence
+
+A separate test over the last 60 sessions (`OBV_DIVERGENCE_DAYS`), whose last 10 (`OBV_DIVERGENCE_RECENT`) are "recent":
+
+- **Bearish divergence:** the highest close of the recent sessions is above every close earlier in the window, but OBV's highest value in the recent sessions is below its earlier peak by more than 5% of the window's volume (`OBV_DIVERGENCE_GAP`). Price made a new high that the volume did not confirm.
+- **Bullish divergence:** the same upside down: a new low in the close that OBV's trough did not follow.
+- If both hold after a very wide swing, the one whose price extreme is more recent is reported. It needs 60 closed sessions of history, separately from the table's 40.
+
+This is not the same test as the table's two "Divergence" rows, which compare the direction of price and OBV over 20 sessions together with volume; the panel shows both and says so when they agree.
+
+### In the bull and bear case and the critic
+
+Both OBV results can add a point (`obv.points`, source "OBV"), at most one per side. Strong Bullish Trend, Bullish Divergence, Silent Accumulation, Steady Advance†, Absorbed Selling† and Dip Buying† add a supporting point; Strong Bearish Trend, Bearish Divergence, Silent Distribution, Distribution Into Strength†, Unconfirmed Rally† and Steady Decline† add a cautionary one. The other 15 rows (the cautions and waiting calls, and the thin or slow accumulation and distribution rows) add none: they are not a lean either way, or too faint to count. A price/OBV divergence adds a supporting point (bullish) or a cautionary one (bearish). When the table and the divergence test point the same way they are one point with both pieces of evidence; when they disagree both are kept. Every cautionary point also appears in the bear case as a medium-rated "Price action and sentiment" concern (`app/risks.py`), so it is not listed twice. OBV is also one of the six signals in the [Institutional buying and selling](#institutional-buying-and-selling) tally, so a falling OBV can show up in both.
+
+### API
+
+`GET /api/chart` also returns `obv`; `/api/analyze` uses the same read (without the series) for the thesis and the critic:
+
+```jsonc
+"obv": {
+  "days": 20, "status": "ok | insufficient_history | no_volume", "message": null,
+  "last_bar_final": true, "newest_bar": "2026-10-20", "as_of": "2026-10-20",
+  "latest": { "price_change": 0.04, "price_state": "rising | falling | flat", "atr": 0, "flat_band": 0.02,
+              "volume_ratio": 1.2, "volume_state": "increasing | decreasing | flat", "avg_volume": 0, "prior_avg_volume": 0,
+              "obv_share": 0.3, "obv_state": "rising | falling | flat", "obv_vs_ma": "above | below | at" },
+  "conclusion": { "id": "strong_bullish", "label": "", "dynamic": "", "action": "", "text": "Strong Bullish Trend (Buy / Hold longs)",
+                  "tone": "good | warn | bad | info", "strong": true, "side": "bull | bear | null", "title": "", "evidence": "", "summary": "" },
+  "divergence": { "status": "ok | insufficient_history", "kind": "bearish | bullish | null", "window": 60, "recent": 10,
+                  "price": { "recent": 0, "recent_date": "", "earlier": 0, "earlier_date": "" },
+                  "obv": { "recent": 0, "earlier": 0, "shortfall_share": 0.08 }, "summary": "" },
+  "matrix": [ { "id": "", "price": "", "volume": "", "obv": "", "label": "", "dynamic": "", "action": "", "text": "", "tone": "", "strong": false, "framework": true } ],   // 27 rows; framework false = the app's own row
+  "rules": { "flat_atr": 1.0, "atr_days": 14, "flat_share": 0.1, "flat_volume": 0.1, "ma_days": 20, "divergence_gap": 0.05 },
+  "series": { "ma_days": 20, "from": "2025-10-21", "obv": [0], "ma": [null] }   // one value per candle returned, OBV shifted to start at 0
+}
+```
+
+The newest bar is handled as in the AVWAP read: if its session was still running when the data was fetched, the read is made on the session before.
+
+### Limits
+
+- OBV counts a session's whole volume as buying or selling by the direction of the close, so it infers buying pressure from price and volume; the data does not show who traded. "Institutional" and "smart money" in the table are the framework's wording for that inference.
+- The table's actions are a rule-of-thumb read, not a forecast and not advice. The thresholds (20 sessions, 1 x ATR, 10% of volume, 10% change in volume, 60 sessions, 5%) are this app's choices, set in [app/config.py](app/config.py). 13 of the 27 rows are the framework's; the 14 marked † are this app's own.
+- OBV is built from daily bars, so a session that closes up on a gap but trades down all day still counts as an up day.
 
 ---
 
@@ -746,6 +848,7 @@ FastAPI backend (Python)
   ├─ peerstore.py   the peers' computed figures, kept for 7 days in data/peers.json
   ├─ chart.py       EMA 20/50/200, volume profile (POC, VAH, VAL), trend signals
   ├─ avwap.py       anchored VWAP over a configurable number of days, and the six-rule price/volume matrix
+  ├─ obv.py         OBV read: price/volume/OBV 27-row table, divergence, chart series
   ├─ sessions.py    exchange clocks: a daily bar's local trading date, and whether its session had ended
   ├─ flows.py       13F and insider activity, capital flow, OBV/A-D/CMF, accumulation/distribution read
   ├─ news.py        latest news (10, expandable to 25), dedupe, filings, market mood facts
@@ -877,7 +980,7 @@ If a metric shows `n/a` when it should have a value, add the CLI's field label t
 python -m pytest -q
 ```
 
-The tests use demo mode and cover the EMA, volume profile, growth rules, flow indicators, news de-duplication, field-mapping layouts, the reconciliation gate (including a failing case), the API endpoints and input validation. `tests/test_cache.py` covers the per-ticker cache: file naming, the freshness boundary, replacing and renaming an old file, merging calls the file lacks, retrying failed calls, unreadable files, an unwritable folder, requests arriving together, and that a cached page equals the live one. `tests/test_avwap.py` covers the anchored VWAP (against hand-computed values and the plain formula), each of the six conclusions reached from price and volume, the decision table including its precedence, the days setting and its limits, and the page controls; `tests/test_sessions.py` covers bar dates and session ends, including summer and winter time. `tests/test_benchmarks.py` covers the industry comparison: the arithmetic and its edge cases (no positive multiple, outside the industry's range, a rank for a different figure, a thin sample), reading the CLI's answer (including the out-of-range and no-industry replies, taken from real output), the analysis with and without the feed, the cards and the Peer group panel the real `web/app.js` draws, and how the page loads the peers (the request it makes, a response for a stock the user has left, a failed one, and that a search does not wait for them), all run under Node (those tests are skipped when Node is not installed). `tests/test_peers.py` covers the peer group: the figures compared and their edge cases (negative equity, another currency, too few peers, ties), choosing peers (nearest in size, never the company's own other lines, using the real Hong Kong list), the store (freshness boundary, restart, an unreadable or unwritable file, threads), measuring a peer by the same code as the company, gathering with spares, what is and is not kept when a peer fails, reading the CLI's industry list, the statement-call spacing, and the service and `/api/peers` endpoint.
+The tests use demo mode and cover the EMA, volume profile, growth rules, flow indicators, news de-duplication, field-mapping layouts, the reconciliation gate (including a failing case), the API endpoints and input validation. `tests/test_cache.py` covers the per-ticker cache: file naming, the freshness boundary, replacing and renaming an old file, merging calls the file lacks, retrying failed calls, unreadable files, an unwritable folder, requests arriving together, and that a cached page equals the live one. `tests/test_avwap.py` covers the anchored VWAP (against hand-computed values and the plain formula), each of the six conclusions reached from price and volume, the decision table including its precedence, the days setting and its limits, and the page controls; `tests/test_sessions.py` covers bar dates and session ends, including summer and winter time. `tests/test_obv.py` covers the OBV read: the framework's rows word for word, every one of the 27 combinations having exactly one row and each reached from price, volume and OBV, the rows that are the app's own being marked, the edges of the three readings, divergence in both directions (and when OBV confirms, falls short by less than the gap, or price makes no new extreme), the chart series, how the read joins the bull case and the critic, and the panel the real `web/app.js` draws (under Node). `tests/test_benchmarks.py` covers the industry comparison: the arithmetic and its edge cases (no positive multiple, outside the industry's range, a rank for a different figure, a thin sample), reading the CLI's answer (including the out-of-range and no-industry replies, taken from real output), the analysis with and without the feed, the cards and the Peer group panel the real `web/app.js` draws, and how the page loads the peers (the request it makes, a response for a stock the user has left, a failed one, and that a search does not wait for them), all run under Node (those tests are skipped when Node is not installed). `tests/test_peers.py` covers the peer group: the figures compared and their edge cases (negative equity, another currency, too few peers, ties), choosing peers (nearest in size, never the company's own other lines, using the real Hong Kong list), the store (freshness boundary, restart, an unreadable or unwritable file, threads), measuring a peer by the same code as the company, gathering with spares, what is and is not kept when a peer fails, reading the CLI's industry list, the statement-call spacing, and the service and `/api/peers` endpoint.
 
 ---
 
@@ -901,6 +1004,7 @@ OptionScanner/
 │   ├── peerstore.py         # the peers' figures, kept for days
 │   ├── chart.py             # EMAs, volume profile, chart signals
 │   ├── avwap.py             # anchored VWAP and the volume matrix
+│   ├── obv.py               # OBV read: the 27-row table, divergence, chart series
 │   ├── sessions.py          # exchange clocks: bar dates, session ends
 │   ├── flows.py             # institutional buying/selling indicators
 │   ├── news.py              # latest news and market mood
@@ -917,7 +1021,7 @@ OptionScanner/
 │   ├── iv_history.json      # daily ATM IV snapshots, builds the IV percentile over time
 │   ├── peers.json           # the peers' computed figures, kept for 7 days
 │   └── AAPL.US-20261020T143210+0800.json   # one cache file per ticker searched in the last 30 minutes
-├── tests/                   # test_app.py, test_options.py, test_valuation.py, test_cache.py, test_avwap.py, test_sessions.py, test_benchmarks.py, test_peers.py (+ cards.js and peers_flow.js, the Node harnesses)
+├── tests/                   # test_app.py, test_options.py, test_valuation.py, test_cache.py, test_avwap.py, test_obv.py, test_sessions.py, test_benchmarks.py, test_peers.py (+ cards.js, peers_flow.js and obv_card.js, the Node harnesses)
 └── web/
     ├── index.html           # single page: search box, cards, bull/bear columns
     ├── app.js

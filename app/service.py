@@ -2,7 +2,7 @@
 from datetime import datetime
 from typing import Optional
 
-from . import avwap, benchmarks, buffett, chart, config, flows, graham, metrics as M, news, peers, quality as Q, reconcile, risks, sessions, thesis, valuation
+from . import avwap, benchmarks, buffett, chart, config, flows, graham, metrics as M, news, obv, peers, quality as Q, reconcile, risks, sessions, thesis, valuation
 from .data import Data, DataError, InputError
 from .util import SYMBOL_RE, num
 
@@ -25,15 +25,20 @@ def _snapshot(quote: dict) -> dict:
     return {k: quote.get(k) for k in keys}
 
 
+def _bar_final(d: Data, sym: str, klines: list) -> bool:
+    """Whether the newest bar is a finished session. Depends on when the data was fetched, which for a cached page is
+    earlier than now, so ask after the kline call: the cache file's time is then known."""
+    return sessions.is_final(sym, klines[-1]["t"], datetime.fromisoformat(d.fetched_at()))
+
+
 def get_chart(d: Data, sym: str, range_: str, bins: int, days: Optional[int] = None) -> dict:
     klines = _klines(d, sym)
     out = chart.build(klines, range_, max(10, min(bins, 120)))
     out["symbol"] = sym
     days = max(config.AVWAP_MIN_DAYS, min(days or config.AVWAP_DAYS, config.AVWAP_MAX_DAYS))
-    # Whether the newest bar is a finished session depends on when the data was fetched, which for a cached page is
-    # earlier than now. Asked after the kline call so the cache file's time is known.
-    final = sessions.is_final(sym, klines[-1]["t"], datetime.fromisoformat(d.fetched_at()))
+    final = _bar_final(d, sym, klines)
     out["avwap"] = avwap.build(klines, days, final)
+    out["obv"] = {**obv.build(klines, final), "series": obv.series(klines, chart.RANGES.get(range_, 252))}
     return out
 
 
@@ -134,6 +139,7 @@ def analyze(d: Data, sym: str) -> dict:
     m = M.compute(stm, quote, analyst, divs, insiders, klines, short)
     bench = benchmarks.build(d.call("industry_valuation", sym), m)   # None when the industry feed has nothing: no comparison
     ch = chart.build(klines)
+    ch["obv"] = obv.build(klines, _bar_final(d, sym, klines))   # read by the thesis and the critic
     fl = flows.build(klines, insiders, ownership, cap_flow)
     rh = Q.roic_vs_wacc(stm, quote, m["roic"])
     pz, az, bm = Q.piotroski(stm), Q.altman(stm, quote), Q.beneish(stm, quote)
@@ -273,6 +279,9 @@ def _sources(period, fetched, mode) -> list:
         ("Anchored VWAP", "sum(typical price x volume) / sum(volume) from the anchor (N trading days back, default 20) to the "
                           "latest closed session; typical price = (H+L+C)/3 - derived", "kline day"),
         ("Flow indicators", "OBV, A/D line, CMF(20), up/down volume - derived from daily bars", "kline day"),
+        ("OBV insights", "OBV = running total of volume, added on an up close and subtracted on a down close. Price, volume and OBV "
+                         "direction over the last 20 sessions are looked up in a 27-row table; divergence = a new 60-session high or "
+                         "low in the close that OBV does not confirm - derived", "kline day"),
         ("Insider / holders", "Form 4 open-market buys and sells; institutional shareholder list", "insider-trades; shareholder"),
         ("Capital flow", "net flow by order size", "capital --flow"),
         ("Short interest", "short-positions rate (US and HK only)", "short-positions"),

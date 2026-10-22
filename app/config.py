@@ -57,6 +57,16 @@ AVWAP_CHOP_BARS = 5         # "consolidating at the AVWAP": the latest closes sp
 AVWAP_CHOP_ATR = 1.0        # true ranges, and the latest is within that of the line (about 6% of sessions at 20 days)
 AVWAP_ATR_DAYS = 14
 
+# ---- On-Balance Volume insights (obv.py) ---------------------------------------------------------------
+OBV_DAYS = 20               # the price / volume / OBV read covers the last N closed sessions (volume is set against the N before)
+OBV_FLAT_ATR = 1.0          # price is "flat" when it moved no more than this many ATRs (AVWAP_ATR_DAYS) over those sessions
+OBV_FLAT_SHARE = 0.10       # OBV is "flat" when its net change is within this share of the volume traded over them
+OBV_FLAT_VOLUME = 0.10      # volume is "flat" when its average is within this share of the earlier period's
+OBV_MA_DAYS = 20            # the moving average drawn over the OBV line on the chart
+OBV_DIVERGENCE_DAYS = 60    # divergence looks at this many sessions; the last OBV_DIVERGENCE_RECENT are "recent" and the
+OBV_DIVERGENCE_RECENT = 10  # sessions before them are what a new high or low is judged against
+OBV_DIVERGENCE_GAP = 0.05   # OBV must fall short of its earlier extreme by this share of the window's volume to count
+
 # Assumptions used for the ROIC vs. WACC test (stated in the UI)
 RISK_FREE = 0.043
 EQUITY_PREMIUM = 0.05

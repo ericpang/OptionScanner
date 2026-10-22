@@ -6,7 +6,7 @@ rephrases the facts below; it does not add data or score anything.
 import json
 from typing import Optional
 
-from . import config
+from . import config, obv
 
 LOW, HIGH = 0, 1  # indexes into config.T pairs: (bull threshold, bear threshold)
 
@@ -169,6 +169,8 @@ def build(metrics: dict, quality: dict, buffett: dict, graham: dict, chart: dict
         add("bull", "Price above the volume-profile value area", "Trading above the range holding 70% of volume", "Volume profile")
     elif sg["price_vs_value_area"] == "below" and e200 is False:
         add("bear", "Price below the volume-profile value area", "Trading below the range holding 70% of volume", "Volume profile")
+    for p in obv.points(chart.get("obv")):
+        add(p["side"], p["title"], p["evidence"], "OBV")
     if graham.get("applicable") and graham["value_trap"]:
         add("bear", "Graham value-trap rules tripped", ", ".join(r["rule"] for r in graham["trap_rules"] if r["tripped"]), "Graham")
     stars = buffett["stars"]

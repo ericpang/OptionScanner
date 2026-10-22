@@ -480,6 +480,7 @@ function showChart(c) {
   $("chartsec").hidden = false;
   drawChart();
   renderAvwap(c.avwap);
+  renderObv(c.obv);
 }
 
 // A new range or AVWAP anchor: fetch the chart again. Only the newest request may draw.
@@ -507,6 +508,11 @@ function drawChart() {
       marker: { color: vp.bins.map((b) => (b.in_value_area ? css("--accent") : muted)), opacity: 0.55 }, name: "Volume profile",
       xaxis: "x2", yaxis: "y", hovertemplate: "%{y:.2f}: %{x:,.0f}<extra>profile</extra>" },
   ];
+  // OBV and its moving average get a panel of their own between the price and the volume bars, on the same dates.
+  const ob = c.obv && c.obv.series && c.obv.series.obv.length === d.length ? c.obv.series : null;
+  if (ob) traces.push(
+    { type: "scatter", mode: "lines", x: d, y: ob.obv, name: "OBV", line: { color: css("--accent"), width: 1.4 }, xaxis: "x", yaxis: "y3" },
+    { type: "scatter", mode: "lines", x: d, y: ob.ma, name: `OBV ${ob.ma_days}-day average`, line: { color: css("--ema20"), width: 1.3, dash: "dot" }, xaxis: "x", yaxis: "y3", connectgaps: false });
   const f = current.flows;
   if (f && f.flow.high_volume_days.length) {
     const byDate = Object.fromEntries(c.candles.map((k) => [k.t, k]));
@@ -525,7 +531,8 @@ function drawChart() {
     paper_bgcolor: "rgba(0,0,0,0)", plot_bgcolor: "rgba(0,0,0,0)", font: { color: ink, size: 12 }, margin: { l: 60, r: 10, t: 10, b: 30 },
     xaxis: { domain: [0, 0.85], rangeslider: { visible: false }, rangebreaks: [{ bounds: ["sat", "mon"] }], gridcolor: line, anchor: "y2" },
     xaxis2: { domain: [0.87, 1], showticklabels: false, anchor: "y", gridcolor: line },
-    yaxis: { domain: [0.24, 1], gridcolor: line, side: "left" }, yaxis2: { domain: [0, 0.2], gridcolor: line, side: "left" },
+    yaxis: { domain: ob ? [0.4, 1] : [0.24, 1], gridcolor: line, side: "left" }, yaxis2: { domain: [0, 0.18], gridcolor: line, side: "left" },
+    ...(ob ? { yaxis3: { domain: [0.22, 0.36], gridcolor: line, side: "left", tickformat: "~s", title: { text: "OBV", font: { size: 10 }, standoff: 4 } } } : {}),
     legend: { orientation: "h", y: 1.06 }, shapes, annotations: ann, hovermode: "x unified", bargap: 0.05,
   };
   Plotly.react("chart", traces, layout, { responsive: true, displaylogo: false });
@@ -568,6 +575,44 @@ function renderAvwap(a) {
       <div class="note">Checked in this order: 6, then 5, then 1 to 4, because 5 and 6 are special cases of the four quadrants. A cross is a close on the other side of the AVWAP from the session before. Volume is compared with the average of the same ${a.days} sessions the AVWAP covers. Flat volume is within ${pct(r.flat_volume, 0)} of that average; consolidating is the last ${r.chop_bars} closes spanning no more than ${r.chop_atr} x ATR(${r.atr_days}), with the latest within that distance of the AVWAP (ATR now ${fx(l.atr)}). All of these are set in app/config.py.</div>
     </details>
     <div class="note">"Institutional" is an inference from price against the volume-weighted average and from volume; the data does not show who traded. The matrix is a rule-of-thumb read of two numbers, not a forecast or advice.</div>
+  </div>`;
+}
+
+// ---------------------------------------------------------------- OBV insights
+// Price, volume and OBV direction against the 27-row table, and the divergence test. The wording, the colours and
+// the table come from the API (app/obv.py), so the framework is defined in one place.
+function renderObv(o) {
+  let box = $("obvinsight");
+  if (!box) { box = document.createElement("div"); box.id = "obvinsight"; ($("avwapinsight") || $("chartsig")).after(box); }
+  if (!o) { box.innerHTML = ""; return; }
+  const title = "Technical insights: On-Balance Volume (OBV)";
+  const dv = o.divergence || {};
+  const divHtml = dv.status === "insufficient_history" ? `<p class="note">${esc(dv.message)}</p>` :
+    `<h3>Divergence <span class="tag ${dv.kind === "bearish" ? "bad solid" : dv.kind === "bullish" ? "good solid" : ""}">${dv.kind ? esc(dv.kind) + " divergence" : "none"}</span></h3><p>${esc(dv.summary)}</p>`;
+  if (o.status !== "ok") { box.innerHTML = `<h2>${title}</h2><div class="card avwap"><p>${esc(o.message)}</p>${divHtml}</div>`; return; }
+  const c = o.conclusion, l = o.latest, r = o.rules;
+  const open = box.querySelector("details[open]") ? " open" : "";   // keep it open across a range change
+  const forming = o.last_bar_final ? "" : `<p class="note"><b>The newest bar (${esc(o.newest_bar)}) was still forming when this data was fetched.</b> Its volume is a fraction of a full day's, so the read is on the ${esc(o.as_of)} close.</p>`;
+  const toneOf = { rising: "good", falling: "bad", flat: "warn", increasing: "", decreasing: "" };
+  const rows = o.matrix.map((m, i) => `<tr class="${m.id === c.id ? "on" : ""}"><td>${i + 1}</td><td>${esc(m.price)}</td><td>${esc(m.volume)}</td><td>${esc(m.obv)}</td><td>${esc(m.label)}${m.framework ? "" : " &dagger;"}</td><td>${esc(m.dynamic)}</td><td>${esc(m.action)}</td></tr>`).join("");
+  box.innerHTML = `<h2>${title} <span class="tag ${c.tone}${c.strong ? " solid" : ""}">${esc(c.label)}</span></h2>
+  <div class="card avwap ${c.tone}">
+    <div class="hl">${esc(c.text)}</div>
+    <p>${esc(c.summary)}</p>
+    <div class="grid">
+      ${card(`Price, ${o.days} sessions`, `${l.price_change >= 0 ? "+" : ""}${pct(l.price_change)}`, `${esc(l.price_state)}; flat is within ${pct(l.flat_band)} (${r.flat_atr} x ATR ${r.atr_days})`, toneOf[l.price_state])}
+      ${card("Volume vs the period before", `${fx(l.volume_ratio, 2)}x`, `${esc(l.volume_state)}; ${big(l.avg_volume)} vs ${big(l.prior_avg_volume)} a day`)}
+      ${card(`OBV, ${o.days} sessions`, `${l.obv_share >= 0 ? "+" : ""}${pct(l.obv_share, 0)}`, `${esc(l.obv_state)}; net change as a share of the volume traded`, toneOf[l.obv_state])}
+      ${card(`OBV vs its ${r.ma_days}-day average`, esc(l.obv_vs_ma || "n/a"), "drawn on the chart", l.obv_vs_ma === "above" ? "good" : l.obv_vs_ma === "below" ? "bad" : "")}
+    </div>
+    ${forming}
+    ${divHtml}
+    <details${open}><summary>How this is decided</summary>
+      <table><tr><th>#</th><th>Price</th><th>Volume</th><th>OBV</th><th>Market condition</th><th>Underlying dynamic</th><th>Trading action</th></tr>${rows}</table>
+      <div class="note">The last ${o.days} closed sessions are read as three things. <b>Price</b> is rising or falling when the close moved by more than ${r.flat_atr} x ATR(${r.atr_days}) and flat otherwise. <b>Volume</b> is increasing or decreasing when its average over those sessions is more than ${pct(r.flat_volume, 0)} above or below the average of the ${o.days} before them, and flat otherwise. <b>OBV</b> is rising or falling when its net change is more than ${pct(r.flat_share, 0)} of the volume traded over them and flat otherwise. Divergence is separate: price closes at a new ${dv.window}-session high (low) in the last ${dv.recent} sessions while OBV's recent peak (trough) stays more than ${pct(r.divergence_gap, 0)} of the window's volume below (above) its earlier one. All of these are set in app/config.py.</div>
+    </details>
+    <div class="note">OBV adds a session's whole volume on an up close and subtracts it on a down close, so it infers buying and selling pressure from price and volume; the data does not show who traded. The table is a rule-of-thumb read, not a forecast or advice.</div>
+    ${o.matrix.some((m) => !m.framework) ? `<div class="note">&dagger; The framework's table does not list this combination of price, volume and OBV; the wording and the action are this app's own reading, not the framework's.</div>` : ""}
   </div>`;
 }
 
