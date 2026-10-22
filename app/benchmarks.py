@@ -74,15 +74,17 @@ PEER_METRICS = {
     "gross_margin": lambda m: m["extra"]["gross_margin"]["latest"],
     "net_margin": lambda m: m["extra"]["net_margin"],
     "fcf_margin": lambda m: m["extra"]["fcf_margin"],
+    "fcfe_margin": lambda m: m["extra"]["fcfe"]["margin"],
     "cash_conversion": lambda m: m["extra"]["cash_conversion"],
     "ev_ebitda": lambda m: m["extra"]["ev_ebitda"],
     "fcf_yield": lambda m: m["extra"]["fcf_yield"],
+    "fcfe_yield": lambda m: m["extra"]["fcfe"]["yield"],
     "interest_coverage": lambda m: m["extra"]["interest_coverage"],
     "current_ratio": lambda m: m["extra"]["current_ratio"],
     "quick_ratio": lambda m: m["extra"]["quick_ratio"],
     "net_debt_equity": lambda m: m["extra"]["net_debt_equity"],
 }
-MIXES_PRICE = ("ev_ebitda", "fcf_yield")   # use the share price and the statements together: meaningless in two currencies
+MIXES_PRICE = ("ev_ebitda", "fcf_yield", "fcfe_yield")   # use the share price and the statements together: meaningless in two currencies
 NEEDS_EQUITY = ("roe", "net_debt_equity")  # meaningless when equity is zero or negative (Dell's ROE reads -300%)
 
 # Which way is better for each figure: True when a higher one is. This is the app's own call, the same one its green,
@@ -92,8 +94,8 @@ NEEDS_EQUITY = ("roe", "net_debt_equity")  # meaningless when equity is zero or 
 HIGHER_IS_BETTER = {
     "operating_margin": True, "roic": True, "roe": True, "debt_to_ebitda": False, "fcf_growth": True,
     "net_income_growth": True, "revenue_growth": True, "gross_margin": True, "net_margin": True, "fcf_margin": True,
-    "cash_conversion": True, "ev_ebitda": False, "fcf_yield": True, "interest_coverage": True, "current_ratio": True,
-    "quick_ratio": True, "net_debt_equity": False,
+    "fcfe_margin": True, "cash_conversion": True, "ev_ebitda": False, "fcf_yield": True, "fcfe_yield": True,
+    "interest_coverage": True, "current_ratio": True, "quick_ratio": True, "net_debt_equity": False,
 }
 
 

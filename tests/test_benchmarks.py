@@ -291,8 +291,8 @@ def test_a_card_says_when_there_is_nothing_to_compare_no_rank_or_too_few_compani
 PEER_CARDS = {   # card label -> the API's key for its peer figure
     "Operating margin": "operating_margin", "ROIC": "roic", "ROE": "roe", "Debt / EBITDA": "debt_to_ebitda",
     "FCF growth": "fcf_growth", "Net income growth": "net_income_growth", "Revenue growth": "revenue_growth",
-    "Gross margin": "gross_margin", "Net margin": "net_margin", "FCF margin": "fcf_margin",
-    "Cash conversion": "cash_conversion", "EV / EBITDA": "ev_ebitda", "FCF yield": "fcf_yield",
+    "Gross margin": "gross_margin", "Net margin": "net_margin", "FCF margin": "fcf_margin", "FCFE margin": "fcfe_margin",
+    "Cash conversion": "cash_conversion", "EV / EBITDA": "ev_ebitda", "FCF yield": "fcf_yield", "FCFE yield": "fcfe_yield",
     "Interest coverage": "interest_coverage", "Current ratio": "current_ratio", "Quick ratio": "quick_ratio",
     "Net debt / equity": "net_debt_equity",
 }
@@ -316,7 +316,7 @@ def test_every_compared_metric_card_shows_the_peer_median_and_where_the_company_
             assert f"above {b['above']} of {b['n']}" in sub and any(a in sub for a in "▲▼="), label
             assert c[label]["tips"] and "Middle half of the peers" in c[label]["tips"][-1]
             full += 1
-    assert full >= 15                                                          # the demo company has every figure
+    assert full >= 17                                                          # the demo company has every figure
     assert c["Operating margin"]["sub"].startswith("5y:")                      # what the card said before is still there
     for label in ("PEG", "Analyst ratings", "Dividend", "P/E (TTM)"):
         assert "Peer median" not in c[label]["sub"]                            # no peer figure for these

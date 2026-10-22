@@ -51,6 +51,57 @@ def debt_of(p: dict) -> Optional[float]:
     return (s or 0) + (l or 0)
 
 
+def net_borrowing_of(p: Optional[dict]) -> Optional[float]:
+    """Debt issued plus debt repaid (repayments are stored negative) in one period: positive when the company
+    borrowed more than it paid back, negative when it paid down debt. None when the period has neither figure."""
+    if not p:
+        return None
+    i, rp = num(p.get("debt_issued")), num(p.get("debt_repaid"))
+    if i is None and rp is None:
+        return None
+    return (i or 0) + (rp or 0)
+
+
+def fcfe_of(p: Optional[dict]) -> Optional[float]:
+    """Free cash flow to equity: operating cash flow - capex + net borrowing. What is left for shareholders once the
+    business has paid for its investment and for the debt it repaid, or after it borrowed to cover them."""
+    f, b = fcf_of(p), net_borrowing_of(p)
+    return None if f is None or b is None else f + b
+
+
+def fcfe_block(stm: dict, quote: dict, mcap: Optional[float]) -> dict:
+    """FCFE and what it is made of over the trailing twelve months: the last four quarters when each has the figure, else
+    the last fiscal year (`basis`). Every part is summed over those same periods and signed (capex and debt repaid are
+    negative), so ocf + capex + debt_issued + debt_repaid is exactly ttm. Not meaningful for banks, insurers and REITs,
+    whose debt is part of the business rather than a way of funding it."""
+    from .quality import is_financial   # imported here: quality imports this module
+    blank = {"applicable": True, "ttm": None, "basis": None, "ocf": None, "capex": None, "debt_issued": None,
+             "debt_repaid": None, "net_borrowing": None, "margin": None, "yield": None, "history": [], "note": None}
+    if is_financial(quote):
+        return {**blank, "applicable": False, "note": "Not meaningful for banks, insurers and REITs, whose debt is part "
+                "of the business rather than a way of funding it."}
+    history = [r(fcfe_of(p), 0) for p in stm["annual"]]
+    q = stm.get("quarterly") or []
+    if len(q) >= 4 and all(fcfe_of(x) is not None for x in q[-4:]):
+        per, basis = q[-4:], "ttm"
+    else:
+        per, basis = [latest(stm)], "fy"
+
+    def total(fn) -> Optional[float]:
+        v = [fn(x) for x in per]
+        return None if any(x is None for x in v) else sum(v)
+
+    fcfe = total(fcfe_of)
+    if fcfe is None:
+        return {**blank, "history": history, "note": "Needs operating cash flow, capex and the debt issued or repaid."}
+    return {**blank, "ttm": r(fcfe, 0), "basis": basis, "history": history,
+            "ocf": r(total(lambda x: num(x.get("ocf"))), 0), "capex": r(total(lambda x: -abs(num(x.get("capex")))), 0),
+            "debt_issued": r(total(lambda x: num(x.get("debt_issued")) or 0), 0),
+            "debt_repaid": r(total(lambda x: num(x.get("debt_repaid")) or 0), 0),
+            "net_borrowing": r(total(net_borrowing_of), 0),
+            "margin": r(sdiv(fcfe, total(lambda x: num(x.get("revenue"))))), "yield": r(sdiv(fcfe, mcap))}
+
+
 def series(stm: dict, fn) -> list:
     return [fn(p) for p in stm["annual"]]
 
@@ -240,6 +291,7 @@ def compute(stm: dict, quote: dict, analyst: Optional[dict], divs: Optional[dict
             "ev_ebitda": r(sdiv(ev, ebitda) if ebitda and ebitda > 0 else None, 1),
             "ps": r(num(quote.get("ps")) or (sdiv(mcap, rev_t) if rev_t else None), 2), "pb": r(quote.get("pb"), 2),
             "fcf_yield": r(sdiv(fcf_t, mcap)),
+            "fcfe": fcfe_block(stm, quote, mcap),
             "interest_coverage": r(sdiv(oi_t, abs(int_t)) if int_t else None, 1),
             "current_ratio": r(sdiv(ca, cl), 2),
             "quick_ratio": r(sdiv((ca - inv) if ca is not None else None, cl), 2),

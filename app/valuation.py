@@ -1,8 +1,10 @@
 """Fair-value estimate built by this app. It is NOT GuruFocus's GF Value (a proprietary number that needs a paid
 GuruFocus API token); it is three transparent methods computed from the statements and the quote.
 
-  1. DCF on free cash flow to equity, with a growth fade and a sensitivity grid, plus a REVERSE DCF that shows
-     the growth today's price implies (this one needs no growth assumption from us).
+  1. DCF on free cash flow (operating cash flow less capex), with a growth fade and a sensitivity grid, plus a REVERSE
+     DCF that shows the growth today's price implies (this one needs no growth assumption from us). It is not the
+     metrics' free cash flow to equity, which adds the debt a year raised and subtracts what it repaid: a year of
+     paydown or borrowing is not something to project forever.
   2. Earnings power value (zero-growth value of normalised operating earnings, plus cash less debt).
   3. Graham number, sqrt(22.5 x EPS x book value per share), taken from the quoted P/E and P/B.
 
@@ -110,7 +112,8 @@ def build(stm: dict, quote: dict, metrics: dict, quality: dict) -> dict:
                                "growth_median": None if raw is None else r(raw),
                                "growth_cap": config.DCF_MAX_GROWTH, "beta": 1.0 if beta is None else beta,
                                "beta_assumed": beta is None},
-                       note="Free cash flow to equity, discounted at the cost of equity (risk-free + beta x premium). "
+                       note="Free cash flow (operating cash flow less capex, before any debt repaid or raised), discounted at "
+                            "the cost of equity (risk-free + beta x premium). "
                             f"Growth is the median of the available growth rates, floored at 0 and capped at "
                             f"{config.DCF_MAX_GROWTH:.0%}. Free cash flow is before stock-based compensation, which flatters "
                             "software and chip companies, and beta is assumed 1.0 when the data has none.")

@@ -267,12 +267,14 @@ def _sources(period, fetched, mode) -> list:
         ("P/E (TTM)", "price / sum of last 4 quarters diluted EPS", "quote; financial-statement IS qf"),
         ("PEG", "P/E / EPS growth % (forward consensus, else 3y EPS CAGR) - derived", "institution-rating, forecast-eps; financial-statement IS af"),
         ("FCF growth", "FCF = operating CF - capex; YoY and CAGR - derived", "financial-statement CF"),
+        ("Free cash flow to equity", "operating CF - capex + debt issued - debt repaid, TTM (last fiscal year when there are not "
+                                     "four quarters); margin = FCFE / revenue, yield = FCFE / market cap - derived", "financial-statement CF, IS; quote"),
         ("Debt/EBITDA", "(ST + LT debt) / (operating income + D&A, TTM) - derived", "financial-statement BS, IS, CF"),
         ("Operating margin", "operating income / revenue", "financial-statement IS"),
         ("ROIC", "operating income x (1 - tax rate) / average (equity + debt - cash) - derived", "financial-statement IS, BS"),
         ("ROE", "net income / average equity", "financial-statement IS, BS"),
         ("Net income growth", "YoY, 3y and 5y CAGR (None when base <= 0)", "financial-statement IS"),
-        ("Fair value (app estimate)", "DCF of free cash flow to equity with growth fade; earnings power value; Graham number. "
+        ("Fair value (app estimate)", "DCF of free cash flow (operating CF - capex) with growth fade; earnings power value; Graham number. "
                                       "Not GuruFocus's GF Value - derived", "financial-statement CF, IS, BS; quote; consensus"),
         ("Quality scorecards", "Piotroski 2000, Altman 1968, Beneish 1999, Sloan 1996, Greenblatt - derived", "financial-statement BS, IS, CF"),
         ("EMA / volume profile", "EMA seeded with SMA; profile spreads each bar's volume across its range", "kline day"),

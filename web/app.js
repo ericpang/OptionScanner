@@ -343,8 +343,19 @@ function industryText(b) {
   return `${head}<br><span${tip ? ` title="${esc(tip)}"` : ""}>${t >= 1 ? "▲" : "▼"} ${fx(t, t < 1 ? 2 : 1)}x the median${where ? ", " + where : ""}</span>`;
 }
 
+// How free cash flow to equity is made up, as a sum that adds up to the card's figure: operating cash flow less capex,
+// plus the debt the company borrowed less the debt it repaid. The API's parts are signed, so they are shown as amounts
+// after a plus or minus. A company that repaid more than it borrowed has paid its debt down, and that comes off the cash
+// left for shareholders; one that borrowed more has had it added.
+function fcfeBuild(f) {
+  if (na(f.ttm)) return esc(f.note || "n/a");
+  const nb = f.net_borrowing, over = f.basis === "fy" ? "last fiscal year" : "trailing 12 months";
+  const debt = nb === 0 ? "no net borrowing" : `${nb > 0 ? "+ net borrowing" : "− debt paid down"} ${big(Math.abs(nb))}`;
+  return `${over}: operating CF ${big(f.ocf)} − capex ${big(Math.abs(f.capex))} ${debt}`;
+}
+
 function renderMetrics(m, snap, bench, peers) {
-  const x = m.extra, bm = bench || {}, pr = peers;
+  const x = m.extra, bm = bench || {}, pr = peers, fe = x.fcfe;
   const peg = m.peg, d = m.debt_to_ebitda, ar = m.analyst_ratings;
   const A = [
     card("P/E (TTM)", fx(m.pe_ttm.value, 1), lines(m.pe_ttm.basis ? "basis: " + m.pe_ttm.basis : "", industryLine(bm.pe))),
@@ -366,6 +377,10 @@ function renderMetrics(m, snap, bench, peers) {
     card("Cash conversion", fx(x.cash_conversion) + "x", lines("FCF / net income", peerLine(pr, "cash_conversion")), tag(x.cash_conversion, 0.8, 0.8)),
     card("EV / EBITDA", fx(x.ev_ebitda, 1), peerLine(pr, "ev_ebitda")), card("P/S", fx(x.ps, 1), industryLine(bm.ps)), card("P/B", fx(x.pb, 1), industryLine(bm.pb)),
     card("FCF yield", pct(x.fcf_yield), peerLine(pr, "fcf_yield")),
+    card("Free cash flow to equity", big(fe.ttm), lines(fcfeBuild(fe), na(fe.ttm) ? "" : `debt issued ${big(fe.debt_issued)}, repaid ${big(-fe.debt_repaid)}`,
+      fe.history.length ? "history: " + fe.history.map((v) => big(v)).join(" ") : ""), tag(fe.ttm, 0.0001, 0)),
+    card("FCFE margin", pct(fe.margin), lines("FCFE / revenue", peerLine(pr, "fcfe_margin"))),
+    card("FCFE yield", pct(fe.yield), lines("FCFE / market cap", peerLine(pr, "fcfe_yield"))),
     card("Interest coverage", na(x.interest_coverage) ? "n/a" : fx(x.interest_coverage, 1) + "x", peerLine(pr, "interest_coverage"), tag(x.interest_coverage, 5, 3)),
     card("Current ratio", fx(x.current_ratio), peerLine(pr, "current_ratio"), tag(x.current_ratio, 1.5, 1)), card("Quick ratio", fx(x.quick_ratio), peerLine(pr, "quick_ratio")),
     card("Net debt / equity", fx(x.net_debt_equity), peerLine(pr, "net_debt_equity")),
@@ -399,9 +414,11 @@ const PEER_FIG = {
   gross_margin: ["Gross margin", (v) => pct(v), "pts"],
   net_margin: ["Net margin", (v) => pct(v), "pts"],
   fcf_margin: ["FCF margin", (v) => pct(v), "pts"],
+  fcfe_margin: ["FCFE margin", (v) => pct(v), "pts"],
   cash_conversion: ["Cash conversion", (v) => (na(v) ? "n/a" : fx(v) + "x"), "diff", "x"],
   ev_ebitda: ["EV / EBITDA", (v) => fx(v, 1), "ratio"],
   fcf_yield: ["FCF yield", (v) => pct(v), "pts"],
+  fcfe_yield: ["FCFE yield", (v) => pct(v), "pts"],
   interest_coverage: ["Interest coverage", (v) => (na(v) ? "n/a" : fx(v, 1) + "x"), "diff", "x"],
   current_ratio: ["Current ratio", (v) => fx(v), "diff"],
   quick_ratio: ["Quick ratio", (v) => fx(v), "diff"],
@@ -468,7 +485,7 @@ function renderPeers(p) {
    <details><summary>Show every figure for every peer</summary>
     <div class="ptable"><table><tr><th>Figure</th><th>${esc(p.symbol)}</th><th>Peer median</th><th>Middle half</th>${p.peers.map((c) => `<th title="${esc(c.name)}, market cap ${big(c.market_cap)}">${esc(c.symbol)}</th>`).join("")}</tr>${rows}</table></div>
    </details>
-   <div class="note">${when ? `The peers' figures were fetched ${esc(when)} (the oldest of them) and are reused for ${p.ttl_days} days; <b>Refresh data</b> measures them again. ` : ""}${left.length ? `<b>Left out:</b> ${left.join("; ")}. Each was replaced by the next closest company. ` : ""}A median needs ${p.min_peers} peers with the figure. ROE and net debt / equity skip a peer whose equity is zero or negative, and EV / EBITDA and FCF yield skip a peer whose statements are in another currency than its shares. Periods follow each company's own latest figures, so fiscal years differ between peers. The comparison is only as like-for-like as Longbridge's industry grouping.</div>
+   <div class="note">${when ? `The peers' figures were fetched ${esc(when)} (the oldest of them) and are reused for ${p.ttl_days} days; <b>Refresh data</b> measures them again. ` : ""}${left.length ? `<b>Left out:</b> ${left.join("; ")}. Each was replaced by the next closest company. ` : ""}A median needs ${p.min_peers} peers with the figure. ROE and net debt / equity skip a peer whose equity is zero or negative, and EV / EBITDA, FCF yield and FCFE yield skip a peer whose statements are in another currency than its shares. Periods follow each company's own latest figures, so fiscal years differ between peers. The comparison is only as like-for-like as Longbridge's industry grouping.</div>
   </div>`;
 }
 

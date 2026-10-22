@@ -17,7 +17,7 @@ from typing import Callable, Optional
 
 log = logging.getLogger(__name__)
 
-VERSION = 1   # bump when a figure's definition changes: figures computed by older code are then ignored
+VERSION = 2   # bump when a figure's definition changes or one is added: figures computed by older code are then ignored
 
 
 def _utc_now() -> datetime:

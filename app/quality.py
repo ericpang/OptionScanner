@@ -8,7 +8,11 @@ from . import config
 from .metrics import debt_of, invested_capital, latest, latest_bs, ttm
 from .util import avg2, num, r, sdiv
 
-FIN_WORDS = ("bank", "insur", "reit", "broker", "financ", "capital markets", "asset management")
+# Longbridge gives the industry's name in Chinese on some accounts (半导体厂商, 多元化银行), so the words are matched in both
+# languages: 银行 bank, 保险 insurance, 经纪 brokerage, 金融 finance, 资本市场 capital markets, 资产管理 asset management. A
+# REIT is "房地产投资信托（REITs）", which "reit" already matches.
+FIN_WORDS = ("bank", "insur", "reit", "broker", "financ", "capital markets", "asset management",
+             "银行", "保险", "经纪", "金融", "资本市场", "资产管理")
 
 
 def is_financial(quote: dict) -> bool:

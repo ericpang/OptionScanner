@@ -44,7 +44,9 @@ def _statements(symbol: str):
         shares *= 1 - 0.0025
         ar, inv = rev * 0.45, rev * 0.18
         other_ca = rev * 0.2
-        d_debt = 0.0
+        issued, repaid = debt_lt * 0.01, -debt_lt * 0.02   # a slow pay-down: 2% of the long-term debt repaid, 1% borrowed anew
+        d_debt = issued + repaid
+        debt_lt += d_debt
         d_cash = ocf + capex - div - buyback + d_debt
         cash += d_cash
         re_ += ni - div
@@ -66,11 +68,11 @@ def _statements(symbol: str):
             "total_liabilities": total_liab, "st_debt": debt_st, "lt_debt": debt_lt,
             "other_liabilities": other_liab, "equity": equity, "retained_earnings": re_,
             "ocf": ocf, "capex": capex, "dividends_paid": -div, "buybacks": -buyback,
-            "net_cash_change": d_cash,
+            "debt_issued": issued, "debt_repaid": repaid, "net_cash_change": d_cash,
         })
     flow = ["revenue", "gross_profit", "operating_income", "net_income", "eps", "interest_expense",
             "pretax_income", "tax", "da", "sga", "ocf", "capex", "dividends_paid", "buybacks",
-            "net_cash_change"]
+            "debt_issued", "debt_repaid", "net_cash_change"]
     annual = []
     for y in range(nq // 4):
         grp = quarters[y * 4:(y + 1) * 4]

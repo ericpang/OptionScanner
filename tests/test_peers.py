@@ -83,6 +83,7 @@ def test_a_companys_compared_figures_are_the_ones_on_its_cards():
     assert vals["debt_to_ebitda"] == m["debt_to_ebitda"]["gross"] and vals["net_income_growth"] == m["net_income_growth"]["yoy"]
     assert vals["gross_margin"] == x["gross_margin"]["latest"] and vals["current_ratio"] == x["current_ratio"]
     assert vals["ev_ebitda"] == x["ev_ebitda"] and vals["net_debt_equity"] == x["net_debt_equity"]
+    assert vals["fcfe_margin"] == x["fcfe"]["margin"] and vals["fcfe_yield"] == x["fcfe"]["yield"]
 
 
 def test_zero_or_negative_equity_leaves_out_roe_and_net_debt_to_equity():
@@ -104,8 +105,9 @@ def test_statements_in_another_currency_drop_the_figures_that_use_the_share_pric
     stm, q = d.call("statements", "AAPL.US"), d.call("quote", "AAPL.US")
     m = M.compute(stm, q, None, None, [], [], None)
     ok, apart = benchmarks.peer_values(m, stm), benchmarks.peer_values(m, stm, same_currency=False)
-    assert ok["ev_ebitda"] is not None and ok["fcf_yield"] is not None
-    assert apart["ev_ebitda"] is None and apart["fcf_yield"] is None
+    assert ok["ev_ebitda"] is not None and ok["fcf_yield"] is not None and ok["fcfe_yield"] is not None
+    assert apart["ev_ebitda"] is None and apart["fcf_yield"] is None and apart["fcfe_yield"] is None
+    assert apart["fcfe_margin"] == ok["fcfe_margin"] is not None               # a margin uses the statements alone
     assert {k: v for k, v in apart.items() if k not in benchmarks.MIXES_PRICE} == {k: v for k, v in ok.items() if k not in benchmarks.MIXES_PRICE}
     assert peers.same_currency("CAJPY.US", {"currency": "JPY"}) is False       # an ADR of a Japanese company
     assert peers.same_currency("AAPL.US", {"currency": "USD"}) is True and peers.same_currency("AAPL.US", {}) is True
@@ -243,8 +245,9 @@ def test_a_note_with_its_own_shorter_lifetime_expires_by_it_and_a_junk_one_is_ig
     assert s.get("B.US") is None
 
 
-@pytest.mark.parametrize("content", ["", "not json", "[]", '{"version": 999, "peers": {}}', '{"version": 1}',
-                                     '{"version": 1, "peers": []}', '{"version": 1, "peers": {"A.US": 5}}'])
+@pytest.mark.parametrize("content", ["", "not json", "[]", '{"version": 999, "peers": {}}', '{"version": 1, "peers": {}}',
+                                     f'{{"version": {peerstore.VERSION}}}', f'{{"version": {peerstore.VERSION}, "peers": []}}',
+                                     f'{{"version": {peerstore.VERSION}, "peers": {{"A.US": 5}}}}'])
 def test_an_unreadable_file_or_one_from_another_version_is_ignored_and_replaced(tmp_path, content):
     path = tmp_path / "peers.json"
     path.write_text(content, encoding="utf-8")

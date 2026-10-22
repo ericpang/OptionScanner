@@ -27,6 +27,8 @@ FIELD_MAP: dict[str, list[str]] = {
     # cash flow
     "ocf": ["cash_oper"], "da": ["da_cf"], "capex": ["capex"], "dividends_paid": ["total_div_paid_cf"],
     "buybacks": ["common_rep"], "net_cash_change": ["net_change"],
+    # the totals only: their short- and long-term lines are sometimes empty while the total is filled (AAPL's quarters)
+    "debt_issued": ["total_debt_issued"], "debt_repaid": ["total_debt_repaid"],
 }
 _FIELD_TO_CANON: dict[str, list[str]] = {}
 for _canon, _codes in FIELD_MAP.items():
@@ -96,6 +98,8 @@ ALIASES: dict[str, list[str]] = {
                  "paymentsforrepurchaseofcommonstock", "commonstockpayments"],
     "net_cash_change": ["netchangeincash", "changeincash", "netincreaseincash", "netincreaseindecreaseincash",
                         "changeincashandcashequivalents"],
+    "debt_issued": ["totaldebtissued", "debtissued", "issuanceofdebt", "proceedsfromissuanceofdebt"],
+    "debt_repaid": ["totaldebtrepaid", "debtrepaid", "repaymentofdebt", "repaymentsofdebt"],
 }
 
 _LOOKUP = {norm_key(a): canon for canon, al in ALIASES.items() for a in al}
@@ -249,5 +253,10 @@ def finalize(p: dict) -> dict:
     # ANET get 0 instead of n/a. Banks and insurers have no such section and keep n/a.
     if p.get("current_assets") is not None and p.get("total_assets") is not None:
         for k in ("st_debt", "lt_debt"):
+            p.setdefault(k, 0.0)
+    # The same goes for the debt a period issued or repaid: on a cash flow statement (one with operating cash flow) a
+    # missing line means there was none. Without the zero a quiet quarter would stop the last four from being summed.
+    if p.get("ocf") is not None:
+        for k in ("debt_issued", "debt_repaid"):
             p.setdefault(k, 0.0)
     return p
