@@ -24,9 +24,13 @@ FIELD_MAP: dict[str, list[str]] = {
     "st_debt": ["st_debt", "current_port"],          # short-term borrowings + current portion of LT debt/leases
     "lt_debt": ["lt_debt", "capital_leases"],        # long-term debt + long-term leases
     "equity": ["total_equity"], "retained_earnings": ["re"],
+    # The same debt lines kept apart, for the Two-Stage filter, which counts borrowings as debt and treats lease liabilities
+    # separately. `current_port` is the parent of current_port_debt + current_port_leases (AMZN: 18.26B = 5.29B + 12.97B).
+    "borrow_st": ["st_debt"], "borrow_cp": ["current_port_debt"], "borrow_lt": ["lt_debt"],
+    "lease_cp": ["current_port_leases"], "lease_lt": ["capital_leases"], "cp_total": ["current_port"],
     # cash flow
     "ocf": ["cash_oper"], "da": ["da_cf"], "capex": ["capex"], "dividends_paid": ["total_div_paid_cf"],
-    "buybacks": ["common_rep"], "net_cash_change": ["net_change"],
+    "buybacks": ["common_rep"], "net_cash_change": ["net_change"], "sbc": ["stock_based_cf"],
     # the totals only: their short- and long-term lines are sometimes empty while the total is filled (AAPL's quarters)
     "debt_issued": ["total_debt_issued"], "debt_repaid": ["total_debt_repaid"],
 }
@@ -252,7 +256,7 @@ def finalize(p: dict) -> dict:
     # corporate layout, not a bank) a missing debt line means the company has none, so debt-free names such as
     # ANET get 0 instead of n/a. Banks and insurers have no such section and keep n/a.
     if p.get("current_assets") is not None and p.get("total_assets") is not None:
-        for k in ("st_debt", "lt_debt"):
+        for k in ("st_debt", "lt_debt", "borrow_st", "borrow_cp", "borrow_lt", "lease_cp", "lease_lt", "cp_total"):
             p.setdefault(k, 0.0)
     # The same goes for the debt a period issued or repaid: on a cash flow statement (one with operating cash flow) a
     # missing line means there was none. Without the zero a quiet quarter would stop the last four from being summed.

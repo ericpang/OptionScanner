@@ -85,6 +85,46 @@ def _pct_to_frac(x):
     return None if v is None else v / 100
 
 
+SPLIT_RE = re.compile(r"(\d+(?:\.\d+)?)\s*股\D*?(\d+(?:\.\d+)?)\s*股")   # "1 股拆分为 10 股" (split), "10 股合并为 1 股" (reverse)
+REPORT_FIELDS = {"OperatingRevenue": "revenue", "OperatingIncome": "operating_income", "NetProfit": "net_income",
+                 "EPS": "eps", "GrossMgn": "gross_margin"}
+_REPORT_LABEL = re.compile(r"^(?:Q([1-4])|FY)\s+(\d{4})$")
+
+
+def _epoch_date(x) -> Optional[str]:
+    """The UTC date (YYYY-MM-DD) of a field in epoch seconds, or None."""
+    t = num(x)
+    if not t:
+        return None
+    try:
+        return datetime.fromtimestamp(t, timezone.utc).date().isoformat()
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def _report_rows(raw) -> list:
+    """The income-statement summary of `financial-report` as one row per period, oldest first:
+    {period: "Q3 2026", fy: 2026, fp: 3, end, revenue, operating_income, net_income, eps, gross_margin}. `fp` is None for a
+    fiscal year and `gross_margin` is a fraction. A period whose label is not "Q<n> <year>" or "FY <year>" is skipped,
+    since it could not be placed in the sequence."""
+    try:
+        accounts = [a for ind in raw["list"]["IS"]["indicators"] for a in ind["accounts"]]
+    except (KeyError, TypeError):
+        return []
+    rows: dict = {}
+    for acc in accounts:
+        canon = REPORT_FIELDS.get(acc.get("field")) if isinstance(acc, dict) else None
+        for v in (acc.get("values") or []) if canon else []:
+            m, x = _REPORT_LABEL.match(str(v.get("period") or "").strip()), num(v.get("value"))
+            if not m or x is None:
+                continue
+            fy, fp = int(m[2]), (int(m[1]) if m[1] else None)
+            row = rows.setdefault((fy, fp or 0), {"period": str(v["period"]).strip(), "fy": fy, "fp": fp,
+                                                  "end": _epoch_date(v.get("fp_end"))})
+            row[canon] = x / 100 if canon == "gross_margin" else x
+    return [rows[k] for k in sorted(rows)]
+
+
 def _items(raw: Any) -> list:
     for _ in range(4):
         if isinstance(raw, list):
@@ -120,8 +160,10 @@ class CliProvider:
     # `financial-statement` allows about two calls a second to the whole account and answers a third with code 429002
     # ("retry in 0.6 s"); measured on real peers, every third statement call failed and the retry slept for 1 to 2
     # seconds. Its calls are spaced out here, across every thread of the process, so the page's panels and the peer
-    # comparison share that allowance instead of colliding. Other commands are not limited this tightly.
+    # comparison share that allowance instead of colliding. Other commands are not limited this tightly. `financial-report`, which the
+    # two-stage filter reads for its quarterly history while the peer comparison is filling that allowance, takes slots in the same line.
     STATEMENT_GAP = 0.55
+    PACED = ("financial-statement", "financial-report")
     _statement_lock = threading.Lock()
     _statement_next = 0.0   # when the next statement call may start (time.monotonic)
 
@@ -146,7 +188,7 @@ class CliProvider:
         cmd = [self.exe, *args, "--format", "json"]
         err = ""
         for attempt in range(3):  # transient failures (rate limit, empty reply) are retried
-            if args and args[0] == "financial-statement":
+            if args and args[0] in self.PACED:
                 self._pace_statements()
             try:
                 p = subprocess.run(cmd, capture_output=True, text=True, timeout=config.CLI_TIMEOUT, encoding="utf-8")
@@ -250,15 +292,23 @@ class CliProvider:
     def kline(self, symbol, count):
         """Daily bars, forward-adjusted so splits and dividends do not distort EMAs or the profile.
         Over 1000 bars are fetched as the latest 1000 plus older date-range chunks."""
+        return self._daily(symbol, count, "forward")
+
+    def kline_raw(self, symbol, count):
+        """Daily bars as they traded: not adjusted for splits or dividends. The Two-Stage filter adjusts them for splits
+        alone (see `splits`), because its price tests are about price, not total return."""
+        return self._daily(symbol, count, "none")
+
+    def _daily(self, symbol, count, adjust):
         from datetime import date, timedelta
-        bars = self._bars(self.run("kline", symbol, "--period", "day", "--adjust", "forward",
+        bars = self._bars(self.run("kline", symbol, "--period", "day", "--adjust", adjust,
                                    "--count", str(min(count, self.KLINE_MAX))), symbol)
         for _ in range(6):  # each chunk reaches ~900 calendar days further back
             if len(bars) >= count or not bars:
                 break
             oldest = date.fromisoformat(min(b["t"] for b in bars))
             end, start = oldest - timedelta(days=1), oldest - timedelta(days=900)
-            older = self._bars(self.run("kline", "history", symbol, "--period", "day", "--adjust", "forward",
+            older = self._bars(self.run("kline", "history", symbol, "--period", "day", "--adjust", adjust,
                                         "--start", start.isoformat(), "--end", end.isoformat()), symbol)
             if not older:
                 break  # reached the start of the stock's history
@@ -268,6 +318,46 @@ class CliProvider:
         if not bars:
             raise DataError("kline returned no usable bars")
         return bars[-count:]
+
+    def adj_close(self, symbol, on):
+        """The forward-adjusted close (splits and dividends) of the last session on or before `on`, as {date, close}. Two
+        of these make a total return without fetching the whole history: the S&P 500 comparison asks for SPY on two dates."""
+        from datetime import date, timedelta
+        end = date.fromisoformat(on)
+        bars = self._bars(self.run("kline", "history", symbol, "--period", "day", "--adjust", "forward",
+                                   "--start", (end - timedelta(days=10)).isoformat(), "--end", on), symbol)
+        bars = [b for b in bars if b["t"] <= on]
+        if not bars:
+            raise DataError(f"{symbol} has no daily bar on or before {on}")
+        last = max(bars, key=lambda b: b["t"])
+        return {"date": last["t"], "close": last["c"]}
+
+    def splits(self, symbol):
+        """Share splits and reverse splits, oldest first, as [{date, ratio}]: the ex-date and the new shares per old share
+        (10 for a 10-for-1 split, 0.1 for a 1-for-10 reverse split). The ratio is read from the action's description
+        ("1 股拆分为 10 股"), whose numbers are the same whatever the language. A split whose description cannot be read
+        raises, because every price before it would then be wrong by that factor."""
+        out = []
+        for it in _items(self.run("corp-action", symbol, "--all", "--lang", "zh-CN")):   # one wording, whatever the system language
+            if not isinstance(it, dict) or it.get("action") not in ("StockSplit", "ReverseStockSplit"):
+                continue
+            m, d = SPLIT_RE.search(str(it.get("act_desc") or "")), str(it.get("date") or "")
+            if not m or not re.fullmatch(r"\d{8}", d) or num(m[1]) in (None, 0) or num(m[2]) in (None, 0):
+                raise DataError(f"a split of {symbol} on {d or '?'} could not be read: {it.get('act_desc')!r}")
+            out.append({"date": f"{d[:4]}-{d[4:6]}-{d[6:]}", "ratio": num(m[2]) / num(m[1])})
+        return sorted(out, key=lambda s: s["date"])
+
+    def report_history(self, symbol):
+        """The summary figures of `financial-report`, which reach back much further than `financial-statement`: 43 quarters
+        and 10 fiscal years of revenue, operating income, net profit, diluted EPS and gross margin. The statements hold five
+        quarters, so two trailing-twelve-month periods (revenue growth) and the share count of five years ago can only be
+        built from here. EPS arrives already adjusted for later splits (NVDA's fiscal 2021 shows 0.173, not 6.90), so net
+        profit / EPS is a split-adjusted diluted share count."""
+        out = {key: _report_rows(self.run("financial-report", symbol, "--report", rep))
+               for key, rep in (("quarterly", "qf"), ("annual", "af"))}
+        if not out["quarterly"] and not out["annual"]:
+            raise DataError(f"financial-report returned no summary figures for {symbol}")
+        return out
 
     def _industry(self, symbol, prof):
         try:
@@ -324,12 +414,19 @@ class CliProvider:
         }
 
     def _rating(self, symbol):
-        """institution-rating, memoised per symbol (used for ratings and for the industry name)."""
-        if not hasattr(self, "_rating_cache"):
-            self._rating_cache = {}
-        if symbol not in self._rating_cache:
-            self._rating_cache[symbol] = self.run("institution-rating", symbol)
-        return self._rating_cache[symbol]
+        """institution-rating, used for the ratings and for the industry name. It is held for RATING_TTL seconds, so that the
+        quote and the analyst call of one search share a fetch. Held any longer it would pin the ratings for as long as the
+        server runs, however often the cache asks for them again."""
+        if not hasattr(self, "_ratings"):
+            self._ratings = {}
+        hit = self._ratings.get(symbol)
+        if hit is None or time.monotonic() - hit[0] >= config.RATING_TTL:
+            hit = self._ratings[symbol] = (time.monotonic(), self.run("institution-rating", symbol))
+        return hit[1]
+
+    def forget(self, symbol):
+        """Drop what the provider itself holds for a symbol, so that a refresh fetches it again."""
+        getattr(self, "_ratings", {}).pop(symbol, None)
 
     def analyst(self, symbol):
         rt = self._rating(symbol)
@@ -337,13 +434,14 @@ class CliProvider:
         buy = (num(ev.get("strong_buy")) or 0) + (num(ev.get("buy")) or 0)
         sell = (num(ev.get("sell")) or 0) + (num(ev.get("under")) or 0)
         target = num((rt.get("instratings") or {}).get("target"))
-        fwd = fwd90 = None
+        fwd = fwd90 = fwd_on = None
         surprises = []
         try:  # forecast-eps is a time series of the consensus mean EPS (current fiscal year estimate)
             items = [i for i in _items(self.run("forecast-eps", symbol)) if isinstance(i, dict)]
             items.sort(key=lambda i: num(i.get("forecast_start_date")) or 0)
             if items:
                 fwd = num(items[-1].get("forecast_eps_mean"))
+                fwd_on = _epoch_date(items[-1].get("forecast_start_date"))
                 t90 = (num(items[-1].get("forecast_start_date")) or 0) - 90 * 86400
                 older = [i for i in items if (num(i.get("forecast_start_date")) or 0) <= t90]
                 fwd90 = num(older[-1].get("forecast_eps_mean")) if older else None
@@ -363,7 +461,7 @@ class CliProvider:
         return {"buy": buy, "hold": num(ev.get("hold")), "sell": sell, "target_mean": target,
                 "eps_growth_forward": growth.get("growth"), "eps_growth_basis": growth.get("basis"),
                 "eps_growth_quarters": growth.get("quarters"), "eps_ttm_basis": growth.get("ttm_eps"),
-                "eps_forward": fwd, "eps_forward_90d": fwd90, "surprises": surprises[:4]}
+                "eps_forward": fwd, "eps_forward_date": fwd_on, "eps_forward_90d": fwd90, "surprises": surprises[:4]}
 
     def dividends(self, symbol):
         items = _items(self.run("dividend", symbol))
@@ -564,6 +662,29 @@ class CliProvider:
         rate = num(latest.get("rate"))  # a fraction of float (0.0088 = 0.88%)
         return None if rate is None else round(rate * 100, 2)
 
+    def short_interest_detail(self, symbol):
+        """The latest short-interest report as {rate, shares_short, date, float_shares, days_to_cover}, or None outside the
+        US and Hong Kong. `rate` is the share of the float that Longbridge says is sold short (0.0083 = 0.83%) and `date`
+        the report's settlement date. `float_shares` is Longbridge's circulating-shares figure, which the rate matches:
+        AAPL's 120.76M shares short over 14.57B is 0.83%. The two markets name the shares-short field differently."""
+        if symbol.rsplit(".", 1)[-1].upper() not in ("US", "HK"):
+            return None
+        raw = self.run("short-positions", symbol, "--count", "2")
+        rows = [r for r in (raw.get("data") if isinstance(raw, dict) else _items(raw)) or [] if isinstance(r, dict)]
+        if not rows:
+            return None
+        latest = max(rows, key=lambda r: num(r.get("timestamp")) or 0)
+        circ = None
+        try:
+            circ = num(_find(self.run("static", symbol), "circshares", "circulatingshares"))
+        except DataError:
+            pass   # the rate is Longbridge's own figure; the float only lets the page show what it was measured against
+        t = num(latest.get("timestamp"))
+        stamp = datetime.fromtimestamp(t, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ") if t else None
+        return {"rate": num(latest.get("rate")), "shares_short": num(latest.get("current_shares_short")) or num(latest.get("amount")),
+                "date": sessions.trading_date(symbol, stamp) if stamp else None, "float_shares": circ,
+                "days_to_cover": num(latest.get("days_to_cover"))}
+
 
 class Data:
     """Provider wrapper: caching + warnings."""
@@ -609,26 +730,35 @@ class Data:
         if self.store is not None:
             self.store.discard(symbol)
         self.peer_store.discard(symbol)   # and the figures kept for it as somebody else's peer
+        forget = getattr(self.p, "forget", None)
+        if forget is not None:
+            forget(symbol)   # and what the provider itself holds (the analyst ratings)
 
     def cache_info(self) -> Optional[dict]:
         """Where this request's data came from, for the page; None when there is no disk cache."""
         return None if self.store is None or self.snap is None else self.store.describe(self.snap)
 
-    def fetched_at(self) -> str:
-        """When the data was fetched: the cache file's time if the file supplied any of it, otherwise now."""
-        t = self.snap.stamp if self.snap is not None and self.snap.from_cache else datetime.now(timezone.utc)
-        return t.astimezone(timezone.utc).isoformat(timespec="seconds")
+    def fetched_at(self, *names: str) -> str:
+        """When the data was fetched, as UTC text: the oldest of what this request used from the named calls ("kline",
+        "statements"), or from all of them when none is named. Data from the cache file is as old as its row says, and
+        data fetched for this request, here or by the request whose fetch it shared, is as old as that fetch. The file's
+        market data is fetched later than its fundamentals, so the calls a figure rests on decide how old it is, not the
+        file. With no cache to go by it is now."""
+        seen = self.snap.seen.items() if self.snap is not None else ()
+        times = [t for k, t in seen if not names or k[0] in names]
+        return (min(times) if times else datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat(timespec="seconds")
 
     def was_cached(self, name: str, *args) -> bool:
         """True when this call was answered from the ticker's cache file instead of being fetched."""
         return self.snap is not None and (name, *args) in self.snap.served
 
-    def _memory_ttl(self) -> float:
-        """How long the in-memory cache keeps a value. It follows the disk cache's lifetime, so lowering
-        DISK_CACHE_MINUTES (or turning it off) is never undercut by an older copy in memory. Live data with no disk
-        cache is kept only briefly, enough for concurrent panels to share a fetch."""
+    def _memory_ttl(self, name: str) -> float:
+        """How long the in-memory cache keeps the answer of a call. It follows that call's lifetime in the disk cache
+        (DISK_CACHE_MINUTES, or LIVE_CACHE_MINUTES for market data), so lowering either is never undercut by an older copy
+        in memory, but it is never less than the few seconds that concurrent panels need to share a fetch. Live data with
+        no disk cache is kept only for those few seconds."""
         if self.store is not None:
-            return min(config.MEMORY_TTL, self.store.ttl)
+            return max(config.DEDUPE_TTL, min(config.MEMORY_TTL, self.store.lifetime(name)))
         return config.MEMORY_TTL if self.p.name == "demo" else config.DEDUPE_TTL
 
     def _lock(self, key: tuple) -> threading.Lock:
@@ -641,10 +771,10 @@ class Data:
             self.warnings.append(msg)
 
     def call(self, name: str, *args, optional=True, default=None, quiet=False):
-        """Cached provider call. The ticker's cache file answers first; a call it does not hold is fetched and added to
-        it. Concurrent identical calls share one fetch (the page asks for the same data from several endpoints at
-        once), and a failure is cached briefly so a rate-limited source is not retried by every panel in turn.
-        Failures are never written to the cache file."""
+        """Cached provider call. The ticker's cache file answers first; a call it does not hold, or holds only as market
+        data that has outlived its lifetime, is fetched and added to it (replacing the old row). Concurrent identical calls
+        share one fetch (the page asks for the same data from several endpoints at once), and a failure is cached briefly
+        so a rate-limited source is not retried by every panel in turn. Failures are never written to the cache file."""
         key = (name, *args)
         if self.snap is not None:
             val = self.snap.get(key)
@@ -660,6 +790,8 @@ class Data:
             if hit and time.time() - hit[0] < hit[2]:
                 kind, val = hit[1]
                 if kind == "ok":
+                    if self.snap is not None:
+                        self.snap.saw(key, datetime.fromtimestamp(hit[0], timezone.utc))   # fetched a moment ago, for another request
                     return val
                 if not optional:
                     raise DataError(val)
@@ -677,7 +809,7 @@ class Data:
                 return default
             if self.snap is not None:
                 self.snap.add(key, val)   # copied here, before any caller can change `val` in place
-            self.cache[key] = (time.time(), ("ok", val), self._memory_ttl())
+            self.cache[key] = (time.time(), ("ok", val), self._memory_ttl(name))
             return val
 
 
@@ -690,7 +822,7 @@ def get_data() -> Data:
         # Demo data is synthetic and free to regenerate, so only live data is worth keeping on disk.
         disk = config.DATA_MODE != "demo" and config.DISK_CACHE_SECONDS > 0
         peers_on_disk = config.DATA_MODE != "demo" and config.PEER_CACHE_SECONDS > 0
-        _instance = Data(store=SnapshotStore(config.DATA_DIR, config.DISK_CACHE_SECONDS) if disk else None,
+        _instance = Data(store=SnapshotStore(config.DATA_DIR, config.DISK_CACHE_SECONDS, live_ttl=config.LIVE_CACHE_SECONDS) if disk else None,
                          peer_store=PeerStore(config.DATA_DIR / "peers.json" if peers_on_disk else None,
                                               config.PEER_CACHE_SECONDS))
     return _instance

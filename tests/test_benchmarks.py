@@ -381,7 +381,8 @@ def test_the_page_has_a_place_for_the_peer_group_and_starts_it_beside_the_other_
     c = TestClient(app)
     html, js = c.get("/").text, c.get("/static/app.js").text
     assert 'id="peers"' in html and "async function loadPeers(" in js and "/api/peers?symbol=" in js
-    assert "{ loadPeers(symbol); }" in js     # braces, so the search does not wait a minute for the promise
+    assert re.search(r"=> \{[^}]*\bloadPeers\(symbol\);[^}]*\}", js)     # in braces, so the search does not wait a minute for the promise
+    assert re.search(r"=> \{[^}]*\bloadFilter\(symbol\);[^}]*\}", js)    # and the two-stage filter starts beside it, not after it
     assert "forcePeers = true;" in js          # "Refresh data" measures the peers again
 
 

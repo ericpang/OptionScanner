@@ -20,7 +20,7 @@ let chartSeq = 0;       // numbers chart requests, so a slow one that was supers
 // A cached or older index.html may lack a section this script renders into. Create it rather than failing,
 // so one missing element can never make a panel (or the whole run) disappear.
 function ensureSections() {
-  const order = ["header", "recon", "quality", "valuation", "thesis", "metrics", "peers", "chartsec", "flows", "options", "news", "sources"];
+  const order = ["header", "recon", "quality", "filter", "valuation", "thesis", "metrics", "peers", "chartsec", "flows", "options", "news", "sources"];
   order.forEach((id, i) => {
     if ($(id)) return;
     const s = document.createElement("section");
@@ -61,7 +61,10 @@ const lines = (...xs) => xs.filter(Boolean).join("<br>");   // a card's sub-text
 const benchmark = (html, better) => (html ? `<span class="bench${better === true ? " better" : better === false ? " worse" : ""}">${html}</span>` : "");
 
 document.addEventListener("DOMContentLoaded", () => {
+  ensureSections();   // the filter's section is listened to below, so a page without it must have one first
   $("form").addEventListener("submit", (e) => { e.preventDefault(); run($("symbol").value); });
+  $("filter").addEventListener("submit", (e) => { e.preventDefault(); filterApply(); });
+  $("filter").addEventListener("click", filterClick);
   $("refresh").addEventListener("click", refreshData);
   $("cachenote").addEventListener("click", (e) => { if (e.target.closest("#refresh2")) refreshData(); });
   $("ranges").addEventListener("click", (e) => {
@@ -101,10 +104,10 @@ async function run(raw) {
   if (!symbol) return;
   $("refresh").disabled = false;
   ensureSections();
-  ["header", "recon", "quality", "valuation", "thesis", "metrics", "peers", "flows", "options", "news", "sources", "mode", "cachenote"].forEach((i) => ($(i).innerHTML = ""));
+  ["header", "recon", "quality", "filter", "valuation", "thesis", "metrics", "peers", "flows", "options", "news", "sources", "mode", "cachenote"].forEach((i) => ($(i).innerHTML = ""));
   $("chartsec").hidden = true;
   setStatus(`Analyzing ${symbol}...`);
-  current = { symbol, range: "1y", chart: null, flows: null, cache: null, filing: null, analysis: null, peers: null };
+  current = { symbol, range: "1y", chart: null, flows: null, cache: null, filing: null, analysis: null, peers: null, filter: null };
   [...$("ranges").children].forEach((x) => x.classList.toggle("on", x.dataset.r === "1y"));
   history.replaceState(null, "", `?symbol=${encodeURIComponent(symbol)}`);
 
@@ -115,7 +118,7 @@ async function run(raw) {
   const jobs = [
     // The peer comparison starts as soon as the analysis is up, beside the other panels, not after them. The braces
     // matter: returning loadPeers' promise would hold the whole search (the status line, filings, options) for a minute.
-    api(`/api/analyze?symbol=${symbol}`).then(seen).then(renderAnalysis).then(() => { loadPeers(symbol); }),
+    api(`/api/analyze?symbol=${symbol}`).then(seen).then(renderAnalysis).then(() => { loadFilter(symbol); loadPeers(symbol); }),
     api(chartUrl(symbol)).then(seen).then(showChart),
     api(`/api/flows?symbol=${symbol}`).then(seen).then((f) => { current.flows = f; renderFlows(f); drawChart(); }),
     api(`/api/news?symbol=${symbol}&limit=10`).then(seen).then((n) => renderNews(n, 10)),
@@ -129,30 +132,35 @@ async function run(raw) {
 }
 
 // ---------------------------------------------------------------- cache note
-// A response built from the on-disk cache carries `cache`: when that data was fetched, and how many items the cache
-// did not hold and had to be fetched live. Show the oldest time any panel used.
+// A response built from the on-disk cache carries `cache`: how old the file's fundamentals are (`as_of`), and how old the
+// market data it supplied is (`market_as_of`, null when the response fetched all of its market data itself). Show the oldest
+// of each that any panel used.
 function noteCache(c) {
   if (!c || c.symbol !== current.symbol || !c.from_cache) return;
   const o = current.cache;
-  const base = o && o.as_of <= c.as_of ? o : c;   // ISO times in one format compare in time order
-  current.cache = { as_of: base.as_of, age_seconds: base.age_seconds, ttl_seconds: c.ttl_seconds, live: (o ? o.live : 0) + c.live_calls };
+  // [time, age in seconds] pairs. The earlier time wins and a missing one never beats a real one; ISO times in one format compare in time order.
+  const earlier = (a, b) => (!a || !a[0] ? b : !b || !b[0] ? a : a[0] <= b[0] ? a : b);
+  current.cache = { file: earlier(o && o.file, [c.as_of, c.age_seconds]), market: earlier(o && o.market, [c.market_as_of, c.market_age_seconds]),
+                    ttl: c.ttl_seconds, marketTtl: c.market_ttl_seconds };
   renderCacheNote();
 }
 
 function ageText(sec) {
-  const m = Math.floor(sec / 60);
-  return m < 1 ? "less than a minute" : m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`;
+  const m = Math.floor(sec / 60), h = Math.floor(m / 60);
+  return m < 1 ? "less than a minute" : m < 60 ? `${m} min` : h < 48 ? `${h} h${m % 60 ? ` ${m % 60} min` : ""}` : `${Math.floor(h / 24)} days`;
 }
 
 function renderCacheNote() {
   const c = current.cache;
   if (!c) { $("cachenote").innerHTML = ""; return; }
   const at = (ms) => (Number.isNaN(ms) ? "" : new Date(ms).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }));
-  const t0 = Date.parse(c.as_of), expires = at(t0 + c.ttl_seconds * 1000);
-  $("cachenote").innerHTML = `<div class="banner info"><b>Data fetched from cache</b> as of ${esc(at(t0) || c.as_of)} (${esc(ageText(c.age_seconds))} ago).`
-    + (c.live ? ` ${c.live} item${c.live === 1 ? " was" : "s were"} not in the cache and fetched live.` : "")
-    + (expires ? ` Searching again after ${esc(expires)} fetches fresh data, or ` : " ")
-    + `<button type="button" id="refresh2">refresh now</button></div>`;
+  const ago = ([iso, age]) => `${esc(at(Date.parse(iso)) || iso)} (${esc(ageText(age))} ago)`;
+  const expires = at(Date.parse(c.file[0]) + c.ttl * 1000);
+  $("cachenote").innerHTML = `<div class="banner info"><b>Data from cache.</b> Fundamentals (statements, ratings, holders) as of ${ago(c.file)}`
+    + (expires ? `; fetched again after ${esc(expires)}` : "") + ". Market data (prices, bars, options, news) "
+    + (c.market[0] ? `as of ${ago(c.market)}` : "fetched just now")
+    + (c.marketTtl ? `; fetched again once it is ${esc(ageText(c.marketTtl))} old` : "; fetched again on every search")
+    + `. To fetch all of it again now, <button type="button" id="refresh2">refresh now</button></div>`;
 }
 
 // ---------------------------------------------------------------- analysis
@@ -296,6 +304,7 @@ function renderNotMeasured(r) {
 // Verbatim text from the latest 10-K and 10-Q: the risk-factor summary and any sentence that puts a percentage on customers.
 function renderFilingText(got) {
   if (got && got.symbol === current.symbol) current.filing = got;   // the filings can arrive before the thesis section they sit in, so keep them
+  tsConcentration();   // the two-stage filter shows the same sentences as its unscored concentration flag
   const f = current.filing, box = $("filingtext");
   if (!f || !box) return;
   if (f.status !== "ok") { box.innerHTML = `<p class="note">${esc(f.message)}</p>`; return; }
@@ -487,6 +496,213 @@ function renderPeers(p) {
    </details>
    <div class="note">${when ? `The peers' figures were fetched ${esc(when)} (the oldest of them) and are reused for ${p.ttl_days} days; <b>Refresh data</b> measures them again. ` : ""}${left.length ? `<b>Left out:</b> ${left.join("; ")}. Each was replaced by the next closest company. ` : ""}A median needs ${p.min_peers} peers with the figure. ROE and net debt / equity skip a peer whose equity is zero or negative, and EV / EBITDA, FCF yield and FCFE yield skip a peer whose statements are in another currency than its shares. Periods follow each company's own latest figures, so fiscal years differ between peers. The comparison is only as like-for-like as Longbridge's industry grouping.</div>
   </div>`;
+}
+
+// ---------------------------------------------------------------- two-stage filter
+// The scorecard comes from /api/filter (app/twostage.py): every status, figure, threshold and sentence is the server's, and this only
+// lays it out. What the user types in (the five-year average forward P/E, the expected EPS growth, the thesis, the ratings) is kept in
+// this browser, per symbol, and goes to the server with each request; the server decides what it makes of it.
+const TS_TONE = { PASS: "good", "PASS WITH REVIEW": "good", "PASS WITH PEG REVIEW": "good", FAIL: "bad", REVIEW: "warn", UNKNOWN: "warn", INCOMPLETE: "warn" };
+const tsTag = (s) => `<span class="tag ${TS_TONE[s] || ""}">${esc(s)}</span>`;
+const tsKey = (sym) => `tsf:${sym}`;
+const tsGet = (sym) => { try { const v = JSON.parse(localStorage.getItem(tsKey(sym))); return v && typeof v === "object" ? v : {}; } catch { return {}; } };
+const tsSet = (sym, v) => { try { Object.keys(v).length ? localStorage.setItem(tsKey(sym), JSON.stringify(v)) : localStorage.removeItem(tsKey(sym)); } catch { /* storage blocked: the inputs are just not remembered */ } };
+const tsLines = (s) => esc(s || "").replace(/\n/g, "<br>");
+let tsSeq = 0;   // numbers filter requests, so a slow one that was superseded cannot overwrite a newer one
+
+// The request for a set of stored inputs. Question 4 counts as confirmed only when both of its texts are written.
+function tsQuery(sym, v) {
+  const q = new URLSearchParams({ symbol: sym, category: v.category || "auto" });
+  if (Number(v.avg) > 0) q.set("avg_fwd_pe", v.avg);
+  if (v.avgSrc) q.set("avg_fwd_pe_src", v.avgSrc);
+  if (v.cagr !== undefined && String(v.cagr).trim() !== "" && Number.isFinite(Number(v.cagr))) q.set("eps_cagr", v.cagr);
+  if (v.cagrSrc) q.set("eps_cagr_src", v.cagrSrc);
+  if (v.stage2) q.set("stage2", "true");
+  if (v.q4 && (v.thesis || "").trim() && (v.conditions || "").trim()) q.set("q4", "true");
+  [5, 6, 7, 8].forEach((n) => { if (v["r" + n]) q.set("q" + n, v["r" + n]); });
+  return q;
+}
+
+// Started when the analysis is up, beside the other panels; asked again whenever the inputs change.
+async function loadFilter(sym) {
+  const a = current.analysis;
+  if (!a || a.halted || current.symbol !== sym) return;
+  const seq = ++tsSeq;
+  if (!current.filter) $("filter").innerHTML = `<h2>Two-stage filter</h2><div class="card"><p class="note">Running the two-stage filter on ${esc(sym)}. It reads the statements already fetched and a few more feeds (quarterly history, short interest, splits, the S&amp;P 500), which can take several seconds the first time.</p></div>`;
+  try {
+    const f = await api(`/api/filter?${tsQuery(sym, tsGet(sym))}`);
+    if (seq !== tsSeq || current.symbol !== sym) return;   // the user searched for something else, or applied newer inputs
+    current.filter = f;
+    renderFilter(f);
+  } catch (e) {
+    if (seq === tsSeq && current.symbol === sym) $("filter").innerHTML = `<h2>Two-stage filter</h2><div class="card"><p class="note">The filter failed: ${esc(e.message)}</p></div>`;
+  }
+}
+
+// The form's values become the stored inputs, and the server is asked again.
+function filterApply() {
+  const sym = current.symbol, form = $("tsform");
+  if (!sym || !form) return;
+  const g = (name) => (form.elements[name] ? form.elements[name].value : "");
+  const v = { avg: g("avg"), avgSrc: g("avgSrc").trim(), cagr: g("cagr"), cagrSrc: g("cagrSrc").trim(), category: g("category") || "auto",
+    stage2: !!form.elements.stage2.checked, thesis: g("thesis"), conditions: g("conditions"), q4: !!form.elements.q4.checked };
+  [5, 6, 7, 8].forEach((n) => { const r = form.querySelector(`input[name=r${n}]:checked`); if (r && r.value) v["r" + n] = r.value; });
+  tsSet(sym, v);
+  loadFilter(sym);
+}
+
+function filterClick(e) {
+  const b = e.target.closest("[data-tsf]"), sym = current.symbol, f = current.filter, form = $("tsform");
+  if (!b || !sym) return;
+  if (b.dataset.tsf === "clear") { tsSet(sym, {}); loadFilter(sym); }
+  else if (b.dataset.tsf === "run2") { tsSet(sym, { ...tsGet(sym), stage2: true }); loadFilter(sym); }
+  else if (b.dataset.tsf === "propose" && f && f.proposal && form) {
+    form.elements.thesis.value = f.proposal.thesis;
+    form.elements.conditions.value = f.proposal.conditions.join("\n");
+  }
+}
+
+// One check's conditions: the figure and its period, the threshold, the status, and the kind of evidence and where it came from.
+function tsRows(rows) {
+  return `<table><tr><th>Condition</th><th>Figure and period</th><th>Threshold</th><th>Status</th><th>Source</th></tr>${rows.map((x) =>
+    `<tr><td>${esc(x.label)}</td><td>${esc(x.figure)}${x.period ? `<div class="s">${esc(x.period)}</div>` : ""}${x.gap ? `<div class="s">Shortfall: ${esc(x.gap)}</div>` : ""}${x.note ? `<div class="s">${esc(x.note)}</div>` : ""}</td>
+     <td>${esc(x.threshold)}</td><td>${tsTag(x.status)}</td><td><span class="kind">${esc(x.kind)}</span><div class="s">${esc(x.source)}</div></td></tr>`).join("")}</table>`;
+}
+
+function tsCheck(c) {
+  return `<div class="card" style="margin-top:12px"><h3>${esc(c.title)} ${tsTag(c.status)}</h3>${tsRows(c.rows)}
+    <details class="tsf"><summary>Workings and where to check</summary>${c.workings.length ? `<ul class="plain">${c.workings.map((w) => `<li>${esc(w)}</li>`).join("")}</ul>` : ""}
+    <div class="note"><b>Where to check:</b> ${esc(c.where)}</div></details></div>`;
+}
+
+// What the app's other panels show that bears on a judgment question. It is evidence for the user's rating, never a rating.
+function tsEvidence(n) {
+  const a = current.analysis, bf = a && a.quality && a.quality.buffett;
+  const list = (title, lines) => `<div class="s"><b>${esc(title)}</b><ul class="plain">${lines.map((l) => `<li>${esc(l)}</li>`).join("")}</ul></div>`;
+  if (n === 5 && bf) return list(`Buffett read: moat ${stars(bf.stars.moat)}`, bf.evidence.moat) + list(`Management ${stars(bf.stars.management)}`, bf.evidence.management);
+  if (n === 6 && bf) return list(`Buffett read: long-term visibility ${stars(bf.stars.visibility)}`, bf.evidence.visibility);
+  if (n === 7) return `<div class="s">Nothing in this app's data measures culture. Governance and incentives are in the proxy statement and the filings; employee reviews and company self-reporting each have limits.</div>`;
+  if (n === 8) return `<div class="s">Nothing in this app's data measures turnover or retention. Look for disclosed turnover, leadership and technical-team continuity and credible reports of key departures; pay alone does not show retention.</div>`;
+  return "";
+}
+
+const tsPoints = (q) => (q.points !== null ? `<b>${q.points}</b>` : q.status === "PENDING" ? "pending" : `unknown<div class="s">${q.low} to ${q.high}</div>`);
+
+function tsStageTwo(f, v) {
+  const s2 = f.stage_two, head = `<h3 style="margin-top:18px">3. Stage two: eight questions</h3>`;
+  if (!s2.run) return `${head}<div class="card"><p>Not run: stage one is ${esc(f.stage_one.status)}. ${f.stage_one.status === "FAIL" ? "A failed stage one ends the screen." : "Stage one has to pass before stage two counts."}</p>
+    <button type="button" data-tsf="run2">Run stage two anyway</button>
+    <div class="note">Running it anyway does not change the stage-one result or make the stock eligible for the list.</div></div>`;
+  const rows = s2.questions.map((q) => {
+    const conds = q.conditions.map((c) => `<li>${tsTag(c.status)} ${esc(c.label)}: ${esc(c.figure)}${c.gap ? ` <span class="s">Shortfall: ${esc(c.gap)}</span>` : ""}${c.note ? `<div class="s">${esc(c.note)}</div>` : ""}</li>`).join("");
+    let extra = "";
+    if (q.n === 4) {
+      const mine = v.thesis || v.conditions ? `<div class="s"><b>Yours:</b> ${tsLines(v.thesis)}<br>${tsLines(v.conditions)}</div>` : "";
+      const prop = q.status === "PENDING" ? (f.proposal ? `<div class="s"><b>Proposed, not yet yours:</b> ${esc(f.proposal.thesis)}<br>${f.proposal.conditions.map(esc).join("<br>")}</div>` : `<div class="s">Nothing to propose: no measure meets its cut-off yet.</div>`) : "";
+      extra = mine + prop;
+    } else if (q.kind === "judgment") extra = `<div class="s">${esc(q.assess)}</div>${tsEvidence(q.n)}`;
+    return `<tr><td>${q.n}. ${esc(q.title)}</td><td>${esc(q.evidence)}${conds ? `<ul class="plain">${conds}</ul>` : ""}${q.note ? `<div class="s">${esc(q.note)}</div>` : ""}${extra}</td>
+      <td>${tsPoints(q)}</td><td><div class="s">${esc(q.source)}</div>${q.period ? `<div class="s">${esc(q.period)}</div>` : ""}</td></tr>`;
+  }).join("");
+  const t = s2.total;
+  return `${head}${s2.on_request ? `<p class="note">Run on request, although stage one is ${esc(f.stage_one.status)}.</p>` : ""}
+    <div class="card"><table><tr><th>Question</th><th>Metric or rating, and evidence</th><th>Points</th><th>Source and date</th></tr>${rows}</table></div>
+    <div class="card avwap ${t.tone}" style="margin-top:12px"><div class="hl">${esc(t.label)}</div>
+      <p><b>${t.confirmed}</b> confirmed of ${t.out_of}${t.complete ? "" : `; the possible range is ${t.low} to ${t.high} of 8`}${t.pending_q4 ? ". Question 4 is pending and left out of the sum until you confirm it" : ""}.</p>
+      <p class="note">${esc(t.note)}</p></div>`;
+}
+
+// Section 4: each failed condition and each question below full points, with the shortfall; the unknowns apart from the failures.
+function tsLost(f) {
+  const l = f.points_lost, ul = (items, fn) => `<ul class="plain">${items.map((x) => `<li>${fn(x)}</li>`).join("")}</ul>`;
+  const failed = l.failed.length ? ul(l.failed, (x) => `<b>${esc(x.where)}:</b> ${esc(x.label)}. ${esc(x.figure)}${x.gap ? `. <b>Shortfall:</b> ${esc(x.gap)}` : ""}`) : `<p class="note">No condition has failed.</p>`;
+  const below = l.below_full.length ? ul(l.below_full, (x) => `<b>Question ${x.n}</b> scored ${x.points} of 1: ${esc(x.evidence)}`) : "";
+  const unknown = l.unknown.length ? `<h4 style="margin:10px 0 2px">Unknown or not applicable (not failures)</h4>${ul(l.unknown, (x) => `<b>${esc(x.where)}:</b> ${esc(x.label)}. ${esc(x.why)}`)}` : "";
+  return `<h3 style="margin-top:18px">4. Where the points went</h3><div class="card"><h4 style="margin:0 0 2px">Failed conditions</h4>${failed}${below ? `<h4 style="margin:10px 0 2px">Questions below full points</h4>${below}` : ""}${unknown}
+    <h4 style="margin:10px 0 2px">Customer concentration (unscored flag)</h4><div id="tsconc"></div></div>`;
+}
+
+function tsVerify(f) {
+  return `<h3 style="margin-top:18px">5. What to verify first</h3><div class="card">${f.verify.length ? f.verify.map((x) =>
+    `<div class="pt"><b>${esc(x.title)}: ${esc(x.value)}</b><span>${esc(x.why)}</span><span><b>Where to check:</b> ${esc(x.where)}</span></div>`).join("") : `<p class="note">Nothing stands out as close to a cut-off.</p>`}</div>`;
+}
+
+function tsTiming(f) {
+  const t = f.timing;
+  if (!t) return "";
+  const head = `<h3 style="margin-top:18px">6. Timing reference points</h3>`;
+  if (!t.available) return `${head}<div class="card"><p class="note">${esc(t.reason)}</p></div>`;
+  const sw = t.swing, rows = [];
+  if (sw) rows.push(`<tr><td>Swing low L</td><td>${fx(sw.low.price)}</td><td>${esc(sw.low.date)}</td></tr><tr><td>Swing high H</td><td>${fx(sw.high.price)}</td><td>${esc(sw.high.date)}</td></tr>
+    <tr><td>61.8% to 78.6% retracement zone</td><td>${fx(sw.zone[0])} to ${fx(sw.zone[1])}</td><td>H - 0.786 x (H - L) to H - 0.618 x (H - L)</td></tr>`);
+  if (t.ema200) rows.push(`<tr><td>200-day EMA of split-adjusted closes</td><td>${fx(t.ema200.value)}</td><td>${esc(t.ema200.date)}</td></tr>`);
+  if (t.earnings) rows.push(`<tr><td>Next earnings date</td><td>${esc(t.earnings.date)}</td><td>${esc(t.earnings.label)}</td></tr>`);
+  return `${head}<div class="card">${rows.length ? `<table><tr><th>Reference</th><th>Level</th><th>Date or basis</th></tr>${rows.join("")}</table>` : ""}
+    ${t.swing_note ? `<p class="note">${esc(t.swing_note)}</p>` : ""}${t.ema_note ? `<p class="note">${esc(t.ema_note)}</p>` : ""}<div class="note">${esc(t.note)}</div></div>`;
+}
+
+// What the user supplies: the two market figures Longbridge does not have, the category, the thesis and the ratings.
+function tsForm(f, v) {
+  const price = f.stage_one.checks.find((c) => c.id === "price"), row = (id) => (price ? price.rows.find((r) => r.id === id) : null);
+  const needPe = row("fwd_pe") && row("fwd_pe").need, needG = row("peg") && row("peg").need, cat = f.fit.category;
+  const rate = (n) => `<div class="rate">${[["", "not rated"], ["3", "3 strong"], ["2", "2 mixed"], ["1", "1 adverse"]].map(([val, lab]) =>
+    `<label><input type="radio" name="r${n}" value="${val}"${String(v["r" + n] || "") === val ? " checked" : ""}> ${lab}</label>`).join("")}</div>`;
+  const judge = f.judgment.map((j) => `<div class="pt"><b>${j.n}. ${esc(j.title)}</b><span>${esc(j.assess)}</span>${tsEvidence(j.n)}${rate(j.n)}</div>`).join("");
+  return `<h3 style="margin-top:18px">Your inputs</h3><form id="tsform" class="card" autocomplete="off">
+    <p class="note">These are kept in this browser only. The checklist wants figures Longbridge does not have, so the tests that need them stay UNKNOWN until you enter them; give the source and date so the page can show where they came from.</p>
+    <div class="tsf-grid">
+      <label>Five-year average forward P/E <input name="avg" type="number" min="0" step="0.1" value="${esc(v.avg ?? "")}" placeholder="e.g. 24.5"><span class="s">${needPe ? `Passes if it is at least ${fx(needPe, 1)}. ` : ""}Same forward horizon and EPS basis as the figure above, not a trailing P/E.</span></label>
+      <label>Source and date <input name="avgSrc" type="text" maxlength="200" value="${esc(v.avgSrc ?? "")}" placeholder="vendor, sampling, date"></label>
+      <label>Expected EPS growth, % a year, 3 to 5 years <input name="cagr" type="number" step="0.1" value="${esc(v.cagr ?? "")}" placeholder="e.g. 12"><span class="s">${needG ? `PEG is at most 1.5 if it is at least ${fx(needG, 1)}. ` : ""}A percentage number: 12 for 12%. Not revenue growth or a one-year rebound.</span></label>
+      <label>Source, horizon and basis <input name="cagrSrc" type="text" maxlength="200" value="${esc(v.cagrSrc ?? "")}" placeholder="vendor, horizon, date"></label>
+      <label>Category for question 1's gross margin <select name="category">${[["auto", `Automatic (${cat.value ? cat.value + ", from " + cat.source : "unresolved"})`], ["software", "Software (over 50%)"], ["hardware", "Hardware (over 35%)"]].map(([val, lab]) =>
+        `<option value="${val}"${(v.category || "auto") === val ? " selected" : ""}>${esc(lab)}</option>`).join("")}</select><span class="s">Industry: ${esc(cat.industry || "unknown")}. A mixed business should be classed from its segment revenue.</span></label>
+      <label class="chk"><input name="stage2" type="checkbox"${v.stage2 ? " checked" : ""}> Run stage two even if stage one does not pass</label>
+    </div>
+    <h4 style="margin:14px 0 4px">Question 4: what would change your mind</h4>
+    <div class="tsf-grid">
+      <label>Thesis, one sentence <textarea name="thesis" rows="2">${esc(v.thesis ?? "")}</textarea></label>
+      <label>Invalidation conditions: one or two, each with a threshold and a time window <textarea name="conditions" rows="2">${esc(v.conditions ?? "")}</textarea></label>
+    </div>
+    <p><button type="button" data-tsf="propose"${f.proposal ? "" : " disabled"}>Use the proposed text</button>
+      <label class="chk"><input name="q4" type="checkbox"${v.q4 ? " checked" : ""}> I confirm both as my own (needs text in both boxes)</label></p>
+    <h4 style="margin:14px 0 4px">Questions 5 to 8: your ratings</h4>
+    <p class="note">3 needs concrete evidence and no material counter-evidence, 2 is actual mixed evidence, 1 is adverse evidence. With too little evidence leave it unrated: that is UNKNOWN, not a 2.</p>
+    ${judge}
+    <p><button type="submit">Apply</button> <button type="button" data-tsf="clear">Clear my inputs</button></p></form>`;
+}
+
+function renderFilter(f) {
+  if (f.status !== "ok") { $("filter").innerHTML = `<h2>Two-stage filter</h2><div class="card"><p>${esc(f.message)}</p></div>`; return; }
+  const v = tsGet(current.symbol), s1 = f.stage_one, d = f.dates;
+  $("filter").innerHTML = `<h2>Two-stage filter ${tsTag(s1.status)}</h2>
+  <div class="card avwap ${f.verdict.tone}">
+    <div class="hl">1. ${esc(f.verdict.line)}</div>
+    <p class="note">Research date ${esc(d.research)}. Financials: ${esc(d.financials)}. Market data: ${esc(d.market)}. Amounts in ${esc(f.company.currency || "the listing currency")}.${f.mode === "demo" ? " Synthetic demo data." : ""}</p>
+    <p class="note"><b>${esc(f.notice)}</b></p>${f.fit.notes.map((n) => `<div class="banner">${esc(n)}</div>`).join("")}
+  </div>
+  <h3 style="margin-top:14px">2. Stage one: three mandatory checks</h3><p class="note">${esc(s1.decision)}</p>
+  ${s1.checks.map(tsCheck).join("")}
+  ${tsStageTwo(f, v)}
+  ${tsLost(f)}
+  ${tsVerify(f)}
+  ${tsTiming(f)}
+  ${tsForm(f, v)}
+  <p class="note"><b>${esc(f.closing)}</b></p>`;
+  tsConcentration();
+}
+
+// The unscored concentration flag: the sentences the text search found in the annual report's customer-concentration note, with any
+// that gives a percentage over 20 marked. Silence is not proof that no customer is that large.
+function tsConcentration() {
+  const box = $("tsconc");
+  if (!box) return;
+  const f = current.filing;
+  if (!f) { box.innerHTML = `<p class="note">The filings are still being read.</p>`; return; }
+  if (f.status !== "ok") { box.innerHTML = `<p class="note">${esc(f.message)} Not checking is not proof that no customer is above 20% of revenue: read the annual report's concentration note.</p>`; return; }
+  const items = f.concentration.map((c) => `<li>${[...c.text.matchAll(/(\d+(?:\.\d+)?)\s*%/g)].some((m) => Number(m[1]) > 20) ? '<span class="tag bad">over 20%</span> ' : ""}${esc(c.text)} <em>[${esc(c.form)} ${esc(c.filed)}]</em></li>`);
+  box.innerHTML = items.length ? `<ul class="plain">${items.join("")}</ul><div class="note">Sentences copied from the filings by a text search; confirm in the filing.</div>`
+    : `<p class="note">No sentence giving a customer's share of revenue was found. That is not proof that none exists: read the annual report's concentration note.</p>`;
 }
 
 // ---------------------------------------------------------------- chart

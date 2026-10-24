@@ -21,7 +21,7 @@ All market data comes from [Longbridge](https://open.longbridge.com). The analys
 
 | Section | Contents |
 |---|---|
-| Cache note | Only when the page was built from the data cache: when the data was fetched and when it will be refreshed (see [Data cache](#data-cache-per-ticker)) |
+| Cache note | Only when the page was built from the data cache: how old the fundamentals and the market data are, and when each will be fetched again (see [Data cache](#data-cache-per-ticker)) |
 | Header | Symbol, price, market cap, PE/PB, 52-week range |
 | Key Metrics | P/E (TTM), PEG, FCF growth, Debt/EBITDA, analyst ratings, operating margin, ROIC, ROE, net income growth, plus the additional metrics (see [Key metrics](#key-metrics)) |
 | Price Chart | Daily candles, EMA 20/50/200, volume and volume profile with POC and value area (see [Price chart](#price-chart-daily-candles-ema-2050200-and-volume-profile)) |
@@ -33,6 +33,7 @@ All market data comes from [Longbridge](https://open.longbridge.com). The analys
 | Institutional Flows | 13F holder changes, insider trades, large-order capital flow, OBV / CMF, and an Accumulation / Neutral / Distribution read (see [Institutional buying and selling](#institutional-buying-and-selling)) |
 | Options | IV vs HV, term structure and skew, put/call volume, and candidate option trades with payoff, breakevens, Greeks and risk flags; a **Scan** page ranks candidates across a list of symbols (see [Option trade scanner](#option-trade-scanner)) |
 | Quality Scorecard | Piotroski F, Altman Z, Beneish M, Sloan accruals, Magic Formula, Graham, Buffett and ROIC vs. WACC, each with its published thresholds (see [Stock quality scorecard](#stock-quality-scorecard)) |
+| Two-stage filter | The Reset & Invest checklist: three pass/fail checks, then eight scored questions, with a source and period beside every figure, what to verify first, and a form for the figures only you can supply (see [Two-stage stock filter](#two-stage-stock-filter)) |
 | News & Market Mood | The latest 10 news items (expandable to 25) plus analyst consensus, market temperature and community activity, with no automated sentiment scoring (see [Latest news and market mood](#latest-news-and-market-mood)) |
 | Management & Insiders | Insider trades, buybacks, dividends, institutional holders |
 | Quant Snapshot | Volatility regime, momentum, seasonality, factor z-scores |
@@ -113,7 +114,7 @@ The metric cards compare the company with its industry in two ways. The **valuat
 
 **Valuation multiples: the industry median.** The P/E, P/S and P/B cards each carry two extra lines: the industry median, and where the company stands against it. For example, `Industry median 20.7 (20 companies)` and `▲ 1.9x the median, percentile 74`.
 
-- **Source.** One call per stock, `longbridge industry-valuation dist SYMBOL`. For each multiple it returns the industry's median, low and high, the company's rank and how many companies were ranked. It is cached with the rest of that ticker's data.
+- **Source.** One call per stock, `longbridge industry-valuation dist SYMBOL`. For each multiple it returns the industry's median, low and high, the company's rank and how many companies were ranked. It is market data (the multiples move with the price), so the cache keeps it for `LIVE_CACHE_MINUTES`, not for the file's whole life.
 - **Median, not average.** Only companies with a positive value are counted, so loss-makers do not drag a P/E median toward zero, and a few extreme multiples (negative equity, near-zero earnings) cannot wreck it the way they wreck an average.
 - **The ratio uses the card's own figure.** "1.9x the median" is the number on the card divided by the median beside it. The percentile is the share of the *other* companies the stock is above, from Longbridge's rank of its own figure for the company. It is shown only when that figure is within 10% of the card's (`BENCH_VALUE_TOLERANCE` in `app/config.py`), because a rank of a different number (a P/E on last year's EPS, say) does not describe this one.
 - **When there is no comparison.** A multiple that is not positive (a loss, negative equity) shows the median and "no comparison without a positive figure". A multiple beyond the industry's range shows "above (or below) the industry's range" instead of a percentile. A median over fewer than 5 companies (`BENCH_MIN_COMPANIES`) is marked "thin sample". If the call fails (an ETF, a stock Longbridge does not place in an industry, a rate limit that outlasts the retries), the cards show no industry lines and the "Some data could not be fetched" banner says why.
@@ -273,7 +274,7 @@ A shorter anchor stays closer to price and is crossed more often, so rules 5 and
 
 ### The latest closed session
 
-The newest bar the data source returns can be a session that is still running. Its volume is a fraction of a day's and would read as "below average", so the app checks whether that bar's session had ended **when the data was fetched** (not when you look: a cached page is up to 30 minutes old). It uses the exchange's own clock: the regular close plus 15 minutes for the closing auction, which is 16:00 in New York, 16:00 in Hong Kong, 15:00 in Shanghai and Shenzhen and 17:00 in Singapore ([app/sessions.py](app/sessions.py)). If the session had not ended, the read is made on the session before and the panel says so. Half days are not modelled, so on those the newest bar is treated as unfinished for a few extra hours.
+The newest bar the data source returns can be a session that is still running. Its volume is a fraction of a day's and would read as "below average", so the app checks whether that bar's session had ended **when the data was fetched** (not when you look: a cached page's bars are up to an hour old, and the time is that of the bars' own fetch, not of the cache file). It uses the exchange's own clock: the regular close plus 15 minutes for the closing auction, which is 16:00 in New York, 16:00 in Hong Kong, 15:00 in Shanghai and Shenzhen and 17:00 in Singapore ([app/sessions.py](app/sessions.py)). If the session had not ended, the read is made on the session before and the panel says so. Half days are not modelled, so on those the newest bar is treated as unfinished for a few extra hours.
 
 ### Colours
 
@@ -612,6 +613,88 @@ The scorecard rides on the main `GET /api/analyze` response under `quality`:
 
 ---
 
+## Two-stage stock filter
+
+The **Two-stage filter** panel (under the quality scorecard) applies the Reset & Invest *Two-Stage Stock Filter* (v2.1, October 2026) to the stock: three mandatory pass/fail checks, then eight questions worth one point each, with 7 of 8 to make the list. The rules are the checklist's own, in [SKILL.md](.agents/skills/two-stage-stock-filter/SKILL.md), unpacked like the Longbridge skills from the `.skill` zip it arrived in (the zip and its [install note](.agents/skills/The-Two-Stage-Stock-Filter_2026-10-21/INSTALL-claude-skill.md) for Claude's own skills setting are still in `.agents/skills/The-Two-Stage-Stock-Filter_2026-10-21/`). The app computes them in [app/twostage.py](app/twostage.py) and [app/pricehist.py](app/pricehist.py) and the page only draws the result.
+
+It is a screen, not advice. "Makes the list" means *qualifies for further research under this checklist*. The panel opens with the checklist's own research notice, puts a source, a period and a kind (`REPORTED`, `CALCULATED`, `CONSENSUS ESTIMATE`, `USER INPUT`, `ANALYST JUDGMENT`) beside every figure, and closes with its own "before you trust this" line. Nothing is loosened to let a company through and nothing is estimated: **a figure that cannot be verified is UNKNOWN, with what is missing, and a company the checklist does not fit has the affected tests NOT APPLICABLE and the screen INCOMPLETE.**
+
+### The checklist as built
+
+| Stage | Test | Rule (the comparison is exactly as the checklist words it) | Where the figure comes from |
+|---|---|---|---|
+| 1. **Can it survive?** | Cash pool above debt, **or** net debt / TTM EBITDA under 1.5x | Either route is enough. "Above" and "under" are strict. EBITDA at zero or below fails the leverage route | Latest quarter's balance sheet; EBITDA = operating income + D&A, TTM |
+| 1. **Does it make cash?** | TTM FCF margin at least 15% | FCF = operating cash flow − capex | Cash flow statement, four quarters |
+| | TTM ROIC above 15% | NOPAT = operating income × (1 − tax / pretax income) over the average of the latest invested capital and the one 12 months earlier (equity + debt − cash pool). Not meaningful when pretax income or the average capital is not positive, or the tax rate is outside 0–100% | Income statement and balance sheets, the latest quarter and the quarter four back |
+| | TTM SBC / revenue under 10% | SBC is not subtracted from FCF | Cash flow statement (`stock_based_cf`) |
+| 1. **Is the price fair?** | Forward P/E at or below its own five-year average forward P/E | Forward P/E = close / consensus EPS | EPS: `forecast-eps`; the average is **yours** (see below) |
+| | PEG at or below 1.5 | Forward P/E / expected annual EPS growth as a percentage number (30 / 20 = 1.5). 1.5 to 2.0 is a **review**, not a fail; above 2.0 fails; growth or EPS that is not positive fails as not meaningful | The growth is **yours** |
+| | Three-month price rise under 50% | Latest completed session against the session on or just before three calendar months earlier, on closes adjusted for **splits only** | Unadjusted daily bars and the split list |
+| 2. Q1 | Growth and margins | Revenue growth over 10%, TTM gross margin over 50% (software) or 35% (hardware), TTM operating margin over 20%. All three 1, two 0.5, else 0 | Eight quarters of revenue; the statements |
+| Q2 | Few investors betting against it | Short interest under 5% of float is 1, otherwise 0 | `short-positions`, US and Hong Kong |
+| Q3 | Rewarding shareholders | Five-year total return (dividends reinvested) above the S&P 500's over the same dates; TTM diluted shares no higher than five years earlier. Both 1, one 0.5 | Daily bars and quarterly summary |
+| Q4 | Written down what would change your mind | Pending until **you** confirm a thesis and its invalidation conditions | You |
+| Q5–Q8 | Moat and CEO, runway, culture, retention | Judgment ratings 1 to 3 (3 is a point, 2 half, 1 none). Too little evidence is UNKNOWN, never a neutral 2 | You, beside the evidence the app has |
+
+**Stage one decides stage two.** Any FAIL fails the stage; with no FAIL, anything UNKNOWN or NOT APPLICABLE makes it INCOMPLETE; otherwise it passes (a PEG in the review band travels with the result as PASS WITH PEG REVIEW). Stage two runs only after a pass, unless you tick **Run stage two even if stage one does not pass**, which does not change the stage-one result or make the stock eligible.
+
+**Totals.** Complete scores: 7 or more of 8 makes the list, 6.5 is a close call, 6 or less misses. While question 4 is pending the other seven are scored as if it will be 1: 6 or more of 7 makes the list *once question 4 is confirmed*, 5.5 is a close call once confirmed, 5 or less misses (confirming cannot lift it to 7). With any question UNKNOWN the result is PROVISIONAL / INCOMPLETE: the confirmed points and the possible range out of 8 are shown, nothing is awarded on a guess, and the denominator is not rescaled. Below the table the panel lists **where the points went** (each failed condition with its shortfall, in percentage points where it is a gap between percentages; the unknowns apart from the failures; the unscored customer-concentration flag from the SEC text search), **what to verify first** (the figures the result is waiting for, then the ones within 30% of their cut-off, each with the filing statement or market-data field to check), and, only for a stock that passed both stages, the **timing reference points**: the latest completed upward swing (a pivot high strictly above the two sessions each side, with the pivot low before it), its 61.8–78.6% retracement zone, the 200-day EMA of split-adjusted closes on at least two years of bars, and the next earnings date. These are reference points, not predicted support or entry points.
+
+### What you type in
+
+Longbridge has no five-year history of *forward* P/E (its `valuation --history` is trailing P/E, which the checklist forbids substituting, and `forecast-eps` held about six months for AAPL) and no three-to-five-year EPS growth estimate. Those two tests therefore stay UNKNOWN until you enter the figures from a data vendor, with the source and date, which the row then shows. The page tells you what would settle each one ("passes if the average is at least 37.9x"; "PEG is at most 1.5 if growth is at least 25.3% a year"). Also yours: a **software or hardware** choice for question 1 (the app reads it from the industry's name, in English or Chinese, and leaves a business that fits neither, or both, unresolved rather than give it the easier cut-off), the **thesis** for question 4 (the app drafts one from the measures that pass, labelled *proposed*; it scores only after you confirm both texts), and the **ratings** for questions 5 to 8, shown beside what the Buffett read in the quality scorecard says about moat, management and visibility. Everything is kept in this browser per symbol (`tsf:SYMBOL`), as the Morningstar number is, and goes to the server with each request; **Clear my inputs** removes it.
+
+### How the data is read
+
+- **Trailing twelve months** are the last four quarters when each has the line and they run on from one another, else the last fiscal year, and the period is printed on every row. A ratio never mixes the two.
+- **Debt and leases.** Debt is interest-bearing borrowings (short-term borrowings, the current portion of long-term debt, long-term debt). Lease liabilities are shown apart. Longbridge's standardized balance sheet puts a company's finance leases in its lease lines (MSFT's 69B) and, in some layouts, its operating leases too (AMZN's single combined line), and the checklist counts only finance leases as debt. So any test that depends on debt (check 1, ROIC) is evaluated **both ways**, with and without the lease lines, and the result stands only if both agree; if they differ, it is UNKNOWN and says the lease note decides it. MSFT's "cash above debt" is UNKNOWN for that reason while its leverage route passes either way.
+- **Quarterly history.** The statements hold five quarters, so revenue growth (eight quarters) and the share count five years back come from `financial-report`'s quarterly summary (43 quarters). Its EPS is already adjusted for later splits (NVDA's fiscal 2021 shows 0.173, not 6.90), so net profit / EPS summed over four quarters is a split-adjusted diluted share count, compared with the four quarters ending exactly five years earlier. Companies report EPS to the cent in the shares of their day, so the rounding allowance for each quarter is divided by the splits since: without that, NVDA's 3.2% fall in shares was called unknowable. A change inside the allowance is UNKNOWN.
+- **Prices.** The forward-adjusted bars the rest of the app uses fold dividends in, which makes them a total-return series: right for the five-year return, wrong for the price tests. The filter fetches unadjusted bars and applies the splits from `corp-action` (a split's ratio is read from its description, in one fixed wording; one that cannot be read is an error, not a guess). It then checks its split-only closes against Longbridge's adjusted ones: they may differ by dividends alone, and if they differ by more, something the splits do not account for (a bonus or rights issue) is missing and the test is UNKNOWN. The five-year return divides forward-adjusted closes, which matches dividend reinvestment at each ex-date (MSFT: raw 309.16 against 297.26 adjusted is a 3.85% dividend adjustment, +76.5% total against +69.7% price).
+- **The S&P 500 comparison** uses SPY's forward-adjusted close as the total-return proxy (the index `.SPX.US` is price-only; SPY runs about 0.1 point a year below it), so a gap under one point of cumulative return is too close to call and UNKNOWN. It is made only for stocks that trade in USD: the app does not convert currencies. Longbridge's quote has no currency (it is empty for AAPL and for Tencent), so a listing is taken to trade in its market's currency.
+- **Short interest** is Longbridge's rate (shares short over circulating shares) with its settlement date. A report older than 60 days is not "the latest reported" and leaves question 2 UNKNOWN: Longbridge's history for JPM.US and KO.US stops at 2022-06-15.
+- **Forward EPS** is `forecast-eps`'s consensus mean. Longbridge does not say which fiscal year it covers (its current forecast year), whether it is GAAP or adjusted, or, for a company that reports in one currency and trades in another, which currency it is in; the row says so and the figures to verify first include it.
+- **Framework fit.** Banks, insurers and REITs (matched by industry name in English and Chinese) have check 1 and check 2 marked NOT APPLICABLE; a company with no trailing revenue has margin tests NOT APPLICABLE. Both leave the screen INCOMPLETE; the price tests and the market questions still run.
+- **Comparisons are unrounded**, with a tie guard of a billionth against floating-point noise (440 / 400 − 1 is 0.10000000000000009, and growth of exactly 10% is not "over 10%").
+- **Calls.** One request makes about nine CLI calls beyond the ones the other panels already made: `financial-report` (quarterly and annual), `short-positions` and `static`, `kline --adjust none` (600 bars), `corp-action --all --lang zh-CN`, `kline history SPY.US --adjust forward` twice, and `finance-calendar report`. They run one after another, because the data service answers a burst with its one-second limit (code 429002), and each is optional: one that fails leaves only the tests that need it UNKNOWN. With nothing cached, the filter alone (statements and prices included) took 8 to 10 seconds for each of AAPL, NVDA, MSFT, AMZN, 700.HK, JPM and QUBT.
+
+### API
+
+`GET /api/filter?symbol=MSFT.US` with optional `avg_fwd_pe` (a positive number), `avg_fwd_pe_src`, `eps_cagr` (a percentage number, 12 for 12%), `eps_cagr_src`, `category` (`auto`, `software`, `hardware`), `stage2` (run stage two anyway), `q4` (the thesis is confirmed) and `q5` to `q8` (1 to 3). Values outside their range are a 422.
+
+```jsonc
+{
+  "symbol": "MSFT.US", "status": "ok",                   // "unavailable" (statements fail reconciliation) comes with a "message"
+  "notice": "Research notice: ...", "closing": "Before you trust this: ...",
+  "dates": { "research": "2026-10-24", "financials": "TTM to 2026-06-30 (Q4 2026)", "market": "2026-10-23 close" },
+  "fit": { "notes": [], "category": { "value": "software", "source": "the industry's name", "industry": "" } },
+  "verdict": { "line": "MSFT.US (...): stage one PASS WITH PEG REVIEW; stage two ...", "stage_one": "", "stage_two": "", "tone": "good" },
+  "stage_one": { "status": "PASS | PASS WITH PEG REVIEW | FAIL | INCOMPLETE", "decision": "", "checks": [
+    { "id": "survive | cash | price", "title": "", "status": "PASS | FAIL | UNKNOWN | NOT APPLICABLE | PASS WITH REVIEW", "workings": [], "where": "",
+      "rows": [ { "id": "", "label": "", "figure": "", "period": "", "threshold": "", "status": "", "kind": "", "source": "", "gap": null, "note": null } ] } ] },
+  "stage_two": { "run": true, "on_request": false, "questions": [ { "n": 1, "title": "", "status": "SCORED | UNKNOWN | PENDING", "points": 1,
+                 "low": 1, "high": 1, "evidence": "", "conditions": [ { "id": "", "label": "", "figure": "", "threshold": "", "status": "", "gap": null } ] } ],
+                 "total": { "confirmed": 6.5, "out_of": 7, "low": 6.5, "high": 6.5, "unknown": [], "pending_q4": true, "label": "", "note": "" } },
+  "points_lost": { "failed": [], "below_full": [], "unknown": [] },
+  "verify": [ { "title": "", "value": "", "why": "", "where": "" } ],
+  "timing": null,                                        // only for a stock that passed both stages
+  "proposal": { "thesis": "", "conditions": [], "note": "" }, "judgment": [ { "n": 5, "title": "", "assess": "" } ], "inputs": {}
+}
+```
+
+### Limits
+
+- The two market figures (five-year average forward P/E, expected EPS growth) have to be typed in, so the filter reaches INCOMPLETE for almost every stock until they are. That is the honest result of what Longbridge offers, not a missing feature.
+- The checklist's "next fiscal year" EPS cannot be confirmed from Longbridge's unlabelled forecast, so the forward P/E carries that caveat on its row.
+- Software versus hardware is read from the industry's name only; the checklist asks for a mixed business to be classed from its segment revenue, which the app does not do. Tencent (internet content) and AMZN (retail) came out unresolved, and question 1 then stays UNKNOWN until you choose.
+- The five-year return is compared with the S&P 500 for US-dollar stocks only, using SPY as a proxy.
+- Question 3's share count is net profit over diluted EPS, which is exact for plain common stock and approximate where preferred dividends or participating securities separate the two.
+- It always runs as of today; the checklist's historical as-of date is not supported.
+- Questions 5 to 8 are judgments. The app shows the evidence it has (the Buffett read for 5 and 6; nothing measurable exists for 7 and 8) and never rates them.
+- The concentration flag is the existing SEC text search (US stocks, `SEC_USER_AGENT` set): a sentence over 20% is marked, and silence is not proof that no customer is that large.
+- Checked live on AAPL.US, NVDA.US, MSFT.US, AMZN.US, 700.HK, JPM.US and QUBT.US in October 2026. What was reproduced independently: AMZN's trailing free cash flow of −11.62B (the same operating cash flow and capex the project notes recorded the day before), MSFT's five-year return from raw and adjusted closes, and the stale JPM short-interest history straight from the CLI. The other figures (share counts, margins, growth) come from Longbridge's statements and summary as they are and were not checked against the filings themselves, which is what the "what to verify first" list is for.
+
+---
+
 ## Option trade scanner
 
 > **Status: the single-stock Options panel is built and tested** (`app/options.py`, `app/strategies.py`, `app/option_scan.py`, `/api/options`, `/api/options/payoff`, 20 tests in `tests/test_options.py`). It was run against live Longbridge data for AAPL and TSLA. **Not built yet:** the multi-symbol **Scan** page (`/api/options/scan`) and HK warrants. Where this section names CLI behaviour, it was checked against the installed CLI (v0.30.0) in October 2026. It integrates the [longbridge-derivatives](.agents/skills/longbridge-derivatives/SKILL.md) skill.
@@ -690,7 +773,7 @@ There is **no composite score**. Candidates are sorted by a column the user pick
 
 ### Scan mode (many stocks)
 
-`Scan` takes a pasted list of symbols (up to 20) and runs a lighter pipeline per symbol: quote, daily bars for HV, the expiries in the window, one chain per chosen expiry, and one batched `option quote` for the candidate legs. About 8 CLI calls per symbol, within the 10 calls per second limit; results are cached for `DISK_CACHE_MINUTES`.
+`Scan` takes a pasted list of symbols (up to 20) and runs a lighter pipeline per symbol: quote, daily bars for HV, the expiries in the window, one chain per chosen expiry, and one batched `option quote` for the candidate legs. About 8 CLI calls per symbol, within the 10 calls per second limit; results are cached as market data, for `LIVE_CACHE_MINUTES`.
 
 The results table has one row per candidate across all symbols: symbol, structure, expiry, legs, credit or debit, max loss, return on risk, probability of profit, IV/HV, flags. Optional filters:
 
@@ -765,46 +848,60 @@ Validation: `view` is one of auto, bullish, bearish, neutral; `dte_min` and `dte
 
 ## Data cache (per ticker)
 
-A ticker that was fetched recently is not fetched again. Its data is saved in the `data/` folder, one JSON file per ticker, and the page is built from that file instead of from Longbridge.
+A ticker that was fetched recently is not fetched again. Its data is saved in the `data/` folder, one JSON file per ticker, and the page is built from that file instead of from Longbridge. The file holds two kinds of data, kept for different lengths of time:
+
+| Kind | What is in it | Reused for | Setting |
+|---|---|---|---|
+| **Fundamentals**: what changes a quarter at a time | Statements and the 43-quarter summary, analyst ratings and estimates, dividends, insider trades, holders, short interest, the list of companies in the industry, the S&P 500 proxy's close on a past date, a news article's text, the latest 10-K and 10-Q text | As long as the file lives | `DISK_CACHE_MINUTES` (default 30) |
+| **Market data**: what changes by the hour | The quote (price, market cap, P/E, P/B, 52-week range), daily bars, capital flow, option chains and quotes, news, the SEC filing list, community posts, market temperature, the industry's P/E, P/B and P/S medians, splits, the next earnings date | An hour, and never longer than the file | `LIVE_CACHE_MINUTES` (default 60) |
+
+So a file can be kept for a week and the price on the page is still current: set `DISK_CACHE_MINUTES=10080` and the market data is fetched again whenever it is an hour old, while the statements, ratings and holders, which are the slow part of a fetch, are not. Which call belongs to which kind is `LIVE_CALLS` and `STATIC_CALLS` in [app/config.py](app/config.py). A call that is in neither counts as market data, and a test fails until every data call is in exactly one of them.
 
 | When you search a ticker | What happens |
 |---|---|
 | There is no file for it | Everything is fetched as usual and saved to `data/TICKER-TIMESTAMP.json`, for example `data/AAPL.US-20261020T143210+0800.json`. |
-| The file is under 30 minutes old | Nothing is fetched. The whole page (analysis, chart, flows, news and the option scan) is built from the file by the same code that builds it from live data, so it is the same page. A line under the search box says *Data fetched from cache as of 20 Oct 2026, 2:32 pm (12 min ago)* and when the data will be refreshed. |
-| The file is 30 minutes old or more | Everything is fetched again and saved to a new file named with the current time. The old file is deleted. |
+| The file is younger than `DISK_CACHE_MINUTES` and its market data is under an hour old | Nothing is fetched. The whole page (analysis, chart, flows, news and the option scan) is built from the file by the same code that builds it from live data, so it is the same page. A line under the search box says *Data from cache. Fundamentals (statements, ratings, holders) as of 22 Oct 2026, 9:35 pm (2 days ago); fetched again after 29 Oct 2026, 9:35 pm. Market data (prices, bars, options, news) as of 24 Oct 2026, 12:49 pm (12 min ago); fetched again once it is 1 h old.* |
+| The file is younger than `DISK_CACHE_MINUTES`, but some of its market data is an hour old or more | Only that market data is fetched again, and it replaces the old rows in the same file, which keeps its name and time. The fundamentals are not touched. |
+| The file is `DISK_CACHE_MINUTES` old or more | Everything is fetched again and saved to a new file named with the current time. The old file is deleted. |
 
 How it works:
 
-- **The file name is the clock.** The timestamp is local time with its UTC offset (`+0800`), and it alone decides whether a file is fresh, so renaming a file makes it older or younger. A time in the future is not trusted. The lifetime is `DISK_CACHE_MINUTES` in `.env` (default 30; 0 turns the cache off).
-- **The file holds the fetched data, not the analysis.** It is a log of the data calls made for the ticker (`quote`, `kline`, `statements`, `option_chain` and so on), one per line, with what each returned. Scores, charts and option candidates are recomputed from it every time, which is why a cached page cannot differ from a live one. The Data sources table shows when the data was fetched, not when it was searched.
-- **What the file does not hold is fetched and added.** An option scan that needs an expiry that was not scanned before, or **Show more** news, is fetched live and merged into the file, which keeps its name and time. If the page needed any of that when it loaded, the note says how many items.
-- **A failed call is tried again.** It is not saved, so a hiccup such as the SEC rate limit on insider trades is not frozen in for 30 minutes. The exception is a call the app already treats as unimportant: its failure is saved, or every search would repeat it. Today that is the news summary: `longbridge news detail` answers in Markdown, not JSON (checked on CLI 0.26.0 in October 2026), so every summary fails after three attempts, about 2 seconds per article. The news panel therefore shows headlines only and takes about 20 seconds on a live fetch, but a cached one is instant.
+- **The file name is the clock for the fundamentals.** The timestamp is local time with its UTC offset (`+0800`), and it alone decides whether a file is fresh, so renaming a file makes it older or younger. A time in the future is not trusted. The lifetime is `DISK_CACHE_MINUTES` in `.env` (default 30; 0 turns the cache off).
+- **Market data carries its own time.** Each call in the file is stored with the time it was fetched (`"at"`), and market data is used while that is less than `LIVE_CACHE_MINUTES` ago (default 60; never more than `DISK_CACHE_MINUTES`; 0 fetches it on every search). It is counted from the call, not from the file. A file written before these times were stored is read as it always was: every call is as old as the file.
+- **The file holds the fetched data, not the analysis.** It is a log of the data calls made for the ticker (`quote`, `kline`, `statements`, `option_chain` and so on), one per line, with what each returned. Scores, charts and option candidates are recomputed from it every time, which is why a cached page cannot differ from a live one. In the Data sources table each figure shows when the calls it rests on were fetched, the oldest of them: a P/E is as old as the statements under it, the moving averages as old as the bars.
+- **What the file does not hold is fetched and added.** An option scan that needs an expiry that was not scanned before, or **Show more** news, is fetched live and merged into the file, which keeps its name and time.
+- **Market data nobody can use any more is dropped.** Whenever the file is saved, market data older than its lifetime is removed (the chain of an expiry that was not asked for again, a set of option quotes for a price the stock has left), so a file kept for a week does not fill up.
+- **A failed call is tried again.** It is not saved, so a hiccup such as the SEC rate limit on insider trades is not frozen in. The exception is a call the app already treats as unimportant: its failure is saved, or every search would repeat it. Today that is the news summary: `longbridge news detail` answers in Markdown, not JSON (checked on CLI 0.26.0 in October 2026), so every summary fails after three attempts, about 2 seconds per article. The news panel therefore shows headlines only and takes about 20 seconds on a live fetch, but a cached one is instant. A saved failure counts as a fundamental (an article's text does not change), so each article is tried once while the file lives, not once an hour.
 - **Only live data is cached.** Demo mode never writes files. The IV history (`data/iv_history.json`) is added to only when the option chains were fetched live, so a cached page does not stamp today's date on old IV figures.
-- **The peers' figures are kept separately, and for longer.** What was computed for each company used as a peer (a dozen figures, not its raw statements) is in `data/peers.json` for 7 days (`PEER_CACHE_DAYS`), because a peer takes 11 CLI calls and a company's fundamentals change a quarter at a time. It is by company, not by search, so it is shared by every stock in the industry. See [Industry comparison](#industry-comparison).
-- **A file that cannot be read or written never breaks the page.** An unreadable file, or one written by another version of the code (`VERSION` in [app/snapshot.py](app/snapshot.py), to be bumped when a data call changes what it returns), is ignored and replaced. If `data/` cannot be written, the page is built from live data and a warning goes to the server log.
-- **Refresh data button.** The **Refresh data** button next to Analyze (and "refresh now" in the cache note) deletes the ticker's cache file and its in-memory entries, then searches again, so everything is fetched live without waiting for the lifetime to pass. It is `POST /api/refresh?symbol=...`.
-- **`DISK_CACHE_MINUTES` is the only freshness setting.** The in-memory cache never keeps a value longer than the disk cache does. With the disk cache off, live data is held in memory for only a few seconds, so panels loading together share one fetch and every new search fetches live data.
+- **The peers' figures are kept separately, and for longer.** What was computed for each company used as a peer (a dozen figures, not its raw statements) is in `data/peers.json` for 7 days (`PEER_CACHE_DAYS`), because a peer takes 11 CLI calls and a company's fundamentals change a quarter at a time. It is by company, not by search, so it is shared by every stock in the industry. The figures that use a peer's price (EV / EBITDA and the free-cash-flow yields) are therefore as old as that, not an hour. See [Industry comparison](#industry-comparison).
+- **A file that cannot be read or written never breaks the page.** An unreadable file (one whose call times are not times is unreadable too), or one written by another version of the code (`VERSION` in [app/snapshot.py](app/snapshot.py), to be bumped when a data call changes what it returns), is ignored and replaced. If `data/` cannot be written, the page is built from live data and a warning goes to the server log.
+- **Refresh data button.** The **Refresh data** button next to Analyze (and "refresh now" in the cache note) deletes the ticker's cache file and its in-memory entries, then searches again, so everything, fundamentals included, is fetched live without waiting for either lifetime to pass. It is `POST /api/refresh?symbol=...`.
+- **Two settings.** `DISK_CACHE_MINUTES` is how long a file and its fundamentals live, `LIVE_CACHE_MINUTES` how long market data does. Both are minutes: a number, or plain arithmetic such as `60*24*7` for a week (a value that is neither is reported on start-up and the default is used). The in-memory cache never keeps a call longer than that call's disk lifetime (and 15 minutes at most), so lowering either is never undercut by an older copy in memory. With the disk cache off, live data is held in memory for only a few seconds, so panels loading together share one fetch and every new search fetches live data.
 - **The files are git-ignored** (`data/*.json`). To force a fresh fetch for one ticker, delete its file.
 
 Measured on AAPL.US with the real CLI: the first search took 29 seconds and 65 CLI calls. The same search after restarting the server took 0.2 seconds and 1 CLI call (the SEC-rate-limited insider-trades call, retried by design), and all five panels were identical.
 
+With a week for the file and an hour for market data (CLI 0.26.0, Saturday 24 October 2026, so prices did not move): the first search of AAPL.US (analysis, chart, flows, news, option scan and the two-stage filter) took 45 seconds and 52 CLI calls. The same search straight away took 1.5 seconds and no CLI calls. Two hours later it took 12 seconds and 23 calls, all of them market data and none for statements, ratings, holders or short interest, and all six panels were identical to the cold fetch.
+
 Limits:
 
-- The data can be up to 30 minutes old, so the price is not live. Delete the ticker's file (or set `DISK_CACHE_MINUTES` lower) when you need a current quote.
-- A data call that returns a degraded result without failing (for example a statement section that came back empty) is saved as it came, and stays until the file expires.
+- Market data can be up to `LIVE_CACHE_MINUTES` old (an hour by default), so the price is not live. **Refresh data** fetches everything again; a lower `LIVE_CACHE_MINUTES` keeps the price fresher at the cost of more fetching.
+- Fundamentals can be as old as `DISK_CACHE_MINUTES`. A company that reports earnings in that time shows its old statements, ratings and estimates until the file expires or you click **Refresh data**.
+- A data call that returns a degraded result without failing (for example a statement section that came back empty) is saved as it came, and stays until its lifetime is over.
 - Searches are cached per ticker, not per set of option controls: changing the expiry window reuses everything the file holds and fetches only what is new.
 
 ---
 
 ## Skills used
 
-The skills live in [.agents/skills/](.agents/skills/) (locked in [skills-lock.json](skills-lock.json)).
+The skills live in [.agents/skills/](.agents/skills/). The four Longbridge skills are locked in [skills-lock.json](skills-lock.json), which pins skills installed from a GitHub repository; the two-stage skill is a local download from Reset & Invest, so it is not in the lock file.
 
 | Skill | Role in the app |
 |---|---|
 | [longbridge](.agents/skills/longbridge/SKILL.md) | Data layer. CLI/SDK commands for quotes, K-lines, financial statements, valuation rank, analyst estimates, news, filings, insider trades and 13F holders. |
 | [longbridge-value-investing](.agents/skills/longbridge-value-investing/SKILL.md) | Core scoring. Buffett five-dimension moat analysis and Graham 100-point NCAV analysis. These supply most of the bull and bear arguments. |
 | [longbridge-quant](.agents/skills/longbridge-quant/SKILL.md) | Quant overlay. Volatility regime, seasonality, multi-factor z-scores, statistical checks. |
+| [two-stage-stock-filter](.agents/skills/two-stage-stock-filter/SKILL.md) | The Reset & Invest checklist (v2.1). Its rules are implemented in `app/twostage.py`; see [Two-stage stock filter](#two-stage-stock-filter). It is not a Longbridge skill and feeds no bull or bear point. |
 | [longbridge-derivatives](.agents/skills/longbridge-derivatives/SKILL.md) | Option trade scanner. Option chain and quote discovery, the strategy matrix (market view x IV level), IV vs HV and skew, payoff and Greeks, calendar and diagonal spreads. See [Option trade scanner](#option-trade-scanner). |
 
 ### How each analysis maps to the bull and bear case
@@ -833,13 +930,18 @@ longbridge shareholder AAPL.US --count 10 --format json                       # 
 longbridge insider-trades AAPL.US --count 40 --format json                    # US only
 longbridge capital AAPL.US --flow --format json                               # net flow by order size
 longbridge short-positions AAPL.US --count 1 --format json                    # US and HK only
+longbridge static AAPL.US --format json                                       # circulating shares: the float short interest is measured against
+longbridge financial-report AAPL.US --report qf --format json                 # 43 quarters of revenue, EPS, net profit (and --report af); two-stage filter
+longbridge kline AAPL.US --period day --adjust none --count 600 --format json  # unadjusted bars; two-stage filter
+longbridge kline history SPY.US --adjust forward --start 2021-10-12 --end 2021-10-22 --format json   # S&P 500 proxy; two-stage filter
+longbridge corp-action AAPL.US --all --lang zh-CN --format json               # splits and reverse splits; two-stage filter
 longbridge market-temp US --format json
 longbridge news AAPL.US --count 20 --format json
 longbridge filing AAPL.US --count 8 --format json
 longbridge topic AAPL.US --count 20 --format json
 ```
 
-**Use `financial-statement`, not `financial-report`.** On US accounts `financial-report` ignores `--kind` and returns only a summary, so it cannot supply the full income statement, balance sheet and cash flow the scorecards need.
+**Use `financial-statement`, not `financial-report`, for the statements.** On US accounts `financial-report` ignores `--kind` and returns only a summary, so it cannot supply the full income statement, balance sheet and cash flow the scorecards need. The two-stage filter reads that summary only for what the five-quarter statements cannot give: eight quarters of revenue and the share count five years back (43 quarters of revenue, operating income, net profit, EPS and gross margin).
 
 Use WebSearch (or another web source) only for gaps Longbridge cannot fill, such as industry outlook, management track record or regulatory news. Tag each such figure `[Source: WebSearch, publisher, date, url]` so it never mixes silently with Longbridge data.
 
@@ -853,7 +955,7 @@ Browser (HTML + JS)
       ▼
 FastAPI backend (Python)
   ├─ data.py        runs longbridge CLI (or Python SDK), parses JSON, caches results in memory and, per ticker, on disk
-  ├─ snapshot.py    per-ticker cache files in data/: TICKER-timestamp.json, reused for 30 minutes
+  ├─ snapshot.py    per-ticker cache files in data/: TICKER-timestamp.json; fundamentals reused for DISK_CACHE_MINUTES, market data for LIVE_CACHE_MINUTES
   ├─ reconcile.py   cross-statement checks (IS↔BS↔CF, market cap, period alignment)
   ├─ buffett.py     five-dimension moat scoring
   ├─ graham.py      NCAV + static/dynamic scoring + value-trap rules
@@ -865,6 +967,8 @@ FastAPI backend (Python)
   ├─ chart.py       EMA 20/50/200, volume profile (POC, VAH, VAL), trend signals
   ├─ avwap.py       anchored VWAP over a configurable number of days, and the six-rule price/volume matrix
   ├─ obv.py         OBV read: price/volume/OBV 27-row table, divergence, chart series
+  ├─ twostage.py    the Two-Stage Stock Filter: three checks, eight questions, totals, what to verify first, timing points
+  ├─ pricehist.py   calendar months, split adjustment, returns between two dates, swings (for the filter)
   ├─ sessions.py    exchange clocks: a daily bar's local trading date, and whether its session had ended
   ├─ flows.py       13F and insider activity, capital flow, OBV/A-D/CMF, accumulation/distribution read
   ├─ news.py        latest news (10, expandable to 25), dedupe, filings, market mood facts
@@ -963,7 +1067,8 @@ Create `.env` in the project root:
 SEC_USER_AGENT=Your Name you@example.com   # optional; lets the app read the latest 10-K / 10-Q from SEC EDGAR (US only)
 GEMINI_API_KEY=...                # optional; GEMINI_MODEL overrides the model (default gemini-2.5-flash)
 DATA_MODE=cli                     # cli | demo (synthetic data, no login needed)
-DISK_CACHE_MINUTES=30             # how long fetched data is reused: per-ticker cache files in data/ (see Data cache); 0 = off
+DISK_CACHE_MINUTES=30             # how long a ticker's cache file and its fundamentals are reused (see Data cache); 10080 = a week, and 60*24*7 works too; 0 = off
+LIVE_CACHE_MINUTES=60             # optional; how long its market data (prices, bars, options, news) is reused, never more than DISK_CACHE_MINUTES; 0 = every search
 AVWAP_DAYS=20                     # optional; trading days back the anchored VWAP starts (5 to 500); the chart has a box to change it
 PEER_CACHE_DAYS=7                 # optional; how long a peer's computed figures are reused (data/peers.json); 0 = never reused
 ```
@@ -996,7 +1101,7 @@ If a metric shows `n/a` when it should have a value, add the CLI's field label t
 python -m pytest -q
 ```
 
-The tests use demo mode and cover the EMA, volume profile, growth rules, flow indicators, news de-duplication, field-mapping layouts, the reconciliation gate (including a failing case), the API endpoints and input validation. `tests/test_cache.py` covers the per-ticker cache: file naming, the freshness boundary, replacing and renaming an old file, merging calls the file lacks, retrying failed calls, unreadable files, an unwritable folder, requests arriving together, and that a cached page equals the live one. `tests/test_avwap.py` covers the anchored VWAP (against hand-computed values and the plain formula), each of the six conclusions reached from price and volume, the decision table including its precedence, the days setting and its limits, and the page controls; `tests/test_sessions.py` covers bar dates and session ends, including summer and winter time. `tests/test_obv.py` covers the OBV read: the framework's rows word for word, every one of the 27 combinations having exactly one row and each reached from price, volume and OBV, the rows that are the app's own being marked, the edges of the three readings, divergence in both directions (and when OBV confirms, falls short by less than the gap, or price makes no new extreme), the chart series, how the read joins the bull case and the critic, and the panel the real `web/app.js` draws (under Node). `tests/test_benchmarks.py` covers the industry comparison: the arithmetic and its edge cases (no positive multiple, outside the industry's range, a rank for a different figure, a thin sample), reading the CLI's answer (including the out-of-range and no-industry replies, taken from real output), the analysis with and without the feed, the cards and the Peer group panel the real `web/app.js` draws, and how the page loads the peers (the request it makes, a response for a stock the user has left, a failed one, and that a search does not wait for them), all run under Node (those tests are skipped when Node is not installed). `tests/test_peers.py` covers the peer group: the figures compared and their edge cases (negative equity, another currency, too few peers, ties), choosing peers (nearest in size, never the company's own other lines, using the real Hong Kong list), the store (freshness boundary, restart, an unreadable or unwritable file, threads), measuring a peer by the same code as the company, gathering with spares, what is and is not kept when a peer fails, reading the CLI's industry list, the statement-call spacing, and the service and `/api/peers` endpoint.
+The tests use demo mode and cover the EMA, volume profile, growth rules, flow indicators, news de-duplication, field-mapping layouts, the reconciliation gate (including a failing case), the API endpoints and input validation. `tests/test_cache.py` covers the per-ticker cache: file naming, the freshness boundary, replacing and renaming an old file, merging calls the file lacks, retrying failed calls, unreadable files, an unwritable folder, requests arriving together, and that a cached page equals the live one. It also covers the two lifetimes: market data fetched again after an hour inside a file kept for a week, every data call belonging to exactly one of the two kinds, a stale row replaced and dropped, the time each Data sources row shows, a bar refreshed mid-session being judged by its own fetch, files without per-call times, reading the two settings (including `60*24*7`), and the note the page shows (under Node). `tests/test_avwap.py` covers the anchored VWAP (against hand-computed values and the plain formula), each of the six conclusions reached from price and volume, the decision table including its precedence, the days setting and its limits, and the page controls; `tests/test_sessions.py` covers bar dates and session ends, including summer and winter time. `tests/test_obv.py` covers the OBV read: the framework's rows word for word, every one of the 27 combinations having exactly one row and each reached from price, volume and OBV, the rows that are the app's own being marked, the edges of the three readings, divergence in both directions (and when OBV confirms, falls short by less than the gap, or price makes no new extreme), the chart series, how the read joins the bull case and the critic, and the panel the real `web/app.js` draws (under Node). `tests/test_benchmarks.py` covers the industry comparison: the arithmetic and its edge cases (no positive multiple, outside the industry's range, a rank for a different figure, a thin sample), reading the CLI's answer (including the out-of-range and no-industry replies, taken from real output), the analysis with and without the feed, the cards and the Peer group panel the real `web/app.js` draws, and how the page loads the peers (the request it makes, a response for a stock the user has left, a failed one, and that a search does not wait for them), all run under Node (those tests are skipped when Node is not installed). `tests/test_peers.py` covers the peer group: the figures compared and their edge cases (negative equity, another currency, too few peers, ties), choosing peers (nearest in size, never the company's own other lines, using the real Hong Kong list), the store (freshness boundary, restart, an unreadable or unwritable file, threads), measuring a peer by the same code as the company, gathering with spares, what is and is not kept when a peer fails, reading the CLI's industry list, the statement-call spacing, and the service and `/api/peers` endpoint. `tests/test_twostage.py` covers the Two-Stage filter: the statement lines it reads (and that the existing debt figure is unchanged), the CLI answers it parses (the quarterly summary, splits and reverse splits, short interest in both markets, the adjusted close), every cut-off with its strict or inclusive edge, debt counted both ways and the check going UNKNOWN when leases decide it, ROIC and when it is not meaningful, the PEG bands, the split-adjusted three-month rise (a split in the window, dividends in Longbridge's series, a split the list does not know), the question scores and the totals table including question 4 pending and unknowns, framework fit, the endpoint and its failure modes, and the section the real `web/app.js` draws under Node (escaping, stored inputs becoming the request, the proposal, the concentration flag). `tests/test_pricehist.py` covers month arithmetic, splits, returns and pivots.
 
 ---
 
@@ -1006,7 +1111,7 @@ The tests use demo mode and cover the EMA, volume profile, growth rules, flow in
 OptionScanner/
 ├── README.MD
 ├── skills-lock.json
-├── .agents/skills/          # longbridge, longbridge-value-investing, longbridge-quant, longbridge-derivatives
+├── .agents/skills/          # longbridge, longbridge-value-investing, longbridge-quant, longbridge-derivatives, two-stage-stock-filter
 ├── app/
 │   ├── main.py              # FastAPI app and /api/analyze
 │   ├── data.py
@@ -1021,6 +1126,8 @@ OptionScanner/
 │   ├── chart.py             # EMAs, volume profile, chart signals
 │   ├── avwap.py             # anchored VWAP and the volume matrix
 │   ├── obv.py               # OBV read: the 27-row table, divergence, chart series
+│   ├── twostage.py          # the Two-Stage Stock Filter
+│   ├── pricehist.py         # split adjustment, returns between dates, swings
 │   ├── sessions.py          # exchange clocks: bar dates, session ends
 │   ├── flows.py             # institutional buying/selling indicators
 │   ├── news.py              # latest news and market mood
@@ -1036,8 +1143,8 @@ OptionScanner/
 ├── data/                    # everything in here is git-ignored
 │   ├── iv_history.json      # daily ATM IV snapshots, builds the IV percentile over time
 │   ├── peers.json           # the peers' computed figures, kept for 7 days
-│   └── AAPL.US-20261020T143210+0800.json   # one cache file per ticker searched in the last 30 minutes
-├── tests/                   # test_app.py, test_options.py, test_valuation.py, test_cache.py, test_avwap.py, test_obv.py, test_sessions.py, test_benchmarks.py, test_peers.py, test_fcfe.py (+ cards.js, peers_flow.js and obv_card.js, the Node harnesses)
+│   └── AAPL.US-20261020T143210+0800.json   # one cache file per ticker, kept for DISK_CACHE_MINUTES
+├── tests/                   # test_app.py, test_options.py, test_valuation.py, test_cache.py, test_avwap.py, test_obv.py, test_sessions.py, test_benchmarks.py, test_peers.py, test_fcfe.py, test_twostage.py, test_pricehist.py (+ cards.js, peers_flow.js, obv_card.js, filter_card.js and cache_note.js, the Node harnesses)
 └── web/
     ├── index.html           # single page: search box, cards, bull/bear columns
     ├── app.js
@@ -1048,16 +1155,16 @@ OptionScanner/
 
 ## API
 
-The option endpoints (`/api/options`, `/api/options/payoff`, `/api/options/scan`) are described in [Option trade scanner](#option-trade-scanner).
+The option endpoints (`/api/options`, `/api/options/payoff`, `/api/options/scan`) are described in [Option trade scanner](#option-trade-scanner), and `/api/filter` in [Two-stage stock filter](#two-stage-stock-filter).
 
 When the data cache is on (live mode), every JSON response also carries `cache`, which says where its data came from:
 
 ```jsonc
-"cache": { "symbol": "AAPL.US", "from_cache": true, "as_of": "2026-10-20T06:32:10+00:00",
-           "age_seconds": 720, "ttl_seconds": 1800, "live_calls": 0 }
+"cache": { "symbol": "AAPL.US", "from_cache": true, "as_of": "2026-10-22T13:35:00+00:00", "age_seconds": 187200, "ttl_seconds": 604800,
+           "market_as_of": "2026-10-24T04:49:00+00:00", "market_age_seconds": 720, "market_ttl_seconds": 3600, "live_calls": 0 }
 ```
 
-`from_cache` is true when the cache file supplied any of the response's data, `as_of` is when that data was fetched (UTC), and `live_calls` counts the calls the file did not hold, which were fetched and added to it. The page reads this only from the four requests a search makes (analyze, chart, flows, news): later requests such as a chart range or **Show more** read the file those just wrote, and would make a live search look like a cached one.
+`from_cache` is true when the cache file supplied any of the response's data. `as_of` is when the file was made (UTC), which is how old its fundamentals are (`age_seconds`), and `ttl_seconds` is how long they are kept. `market_as_of` is the oldest market data the file supplied to this response, or `null` when it supplied none because all of it was fetched for this response, and `market_ttl_seconds` is how long that is kept. `live_calls` counts the calls this response fetched and added to the file: market data that had gone stale, and calls the file did not hold. The page reads this only from the four requests a search makes (analyze, chart, flows, news): later requests such as a chart range or **Show more** read the file those just wrote, and would make a live search look like a cached one.
 
 `GET /api/analyze?symbol=AAPL.US`
 
@@ -1130,6 +1237,8 @@ When the data cache is on (live mode), every JSON response also carries `cache`,
 - Debt includes short-term borrowings, the current portion of long-term debt, long-term debt and long-term leases.
 - The kline API returns at most 1000 candles per request, so longer history is fetched in date-range chunks, forward-adjusted.
 - **Daily bar dates.** Longbridge stamps a daily bar with local midnight written in UTC: the Hong Kong bar for Wednesday 21 October 2026 arrives as `2026-10-20T16:00:00Z`. The app used to take the date off the front of that string, so every Hong Kong, A-share and Singapore bar was dated a day early, and each Monday bar landed on a Sunday, which the chart's weekend gap hides: those charts had no Monday candles. Bars are now dated by their local trading day (`app/sessions.py`). That needs a time zone database; on Windows the `tzdata` package in `requirements.txt` supplies it, and without one the old dating is kept. The cache format version was bumped, so cache files written before the change are ignored. US bars (stamped 04:00 or 05:00 UTC) were never affected.
+- **Cache format version 4.** The two-stage filter needs statement lines the app did not keep before (stock-based compensation, and the debt and lease lines apart) and the date of the consensus EPS, so `VERSION` in `app/snapshot.py` went from 3 to 4 and cache files written before are ignored once. The existing combined `st_debt` and `lt_debt` are unchanged, so Debt / EBITDA and the scorecards read the same.
+- **Two lifetimes in the cache.** What changes by the hour is fetched again after `LIVE_CACHE_MINUTES`; everything else stays for `DISK_CACHE_MINUTES`. Three calls are market data for a reason other than how fast they move. `industry_valuation`: the page drops the industry rank unless Longbridge's own P/E, P/B or P/S for the company is within 10% of the figure on the metric card, so the two have to be as old as each other, or a week-old rank would vanish as the price drifted. `splits`: the unadjusted bars the two-stage filter reads are adjusted with this list, and a new split would leave fresh bars and an old list disagreeing by the split ratio. `earnings_date`: the answer is the next date from the day it was asked, so a week-old one has gone by. The CLI provider also used to hold `institution-rating` for as long as the process ran, which pinned the analyst ratings however often the cache fetched them again; it now holds it for a minute (`RATING_TTL`), long enough for the quote (industry name) and the analyst call of one search to share a fetch, and **Refresh data** clears it. The cache format version was not bumped: a file from before the per-call times were stored is read as every call being as old as the file.
 - The option scanner works from last-trade prices (the CLI gives no bid or ask), and Greeks and probabilities are model outputs. See its Limits section.
 - Insider trades come from the 100 most recent SEC Form 4 filings. If those do not reach back 12 months, the 12-month figure is labelled partial with the date the data starts from (with only 40 filings, AVGO's 12-month insider selling was understated by about $120M). Only open-market buys and sells count; grants, tax withholding, gifts and exercises are ignored. SEC EDGAR rate-limits repeated requests (HTTP 429), in which case the insider signal shows as missing.
 - Magic Formula return on capital is shown as ">500%" when the capital base is tiny (asset-light companies such as AVGO), since the ratio is not meaningful there.
@@ -1147,7 +1256,7 @@ When the data cache is on (live mode), every JSON response also carries `cache`,
 - **Which period each scorecard uses** (shown on the page): Piotroski, the latest quarter against the same quarter a year earlier (fiscal-year score alongside); Altman, the latest quarter's balance sheet with trailing-twelve-month EBIT and sales; Sloan accruals, trailing twelve months over the average of the latest and year-ago assets; Magic Formula and Graham debt cover, the latest balance sheet; Beneish, the last fiscal year against the one before (its indices are calibrated on annual data). Before this, Altman, Sloan and Magic Formula used the January fiscal-year balance sheet against today's price, which mixed dates: for NVDA, Altman read 68 instead of 39, Sloan 10.9% instead of 25.4% (inside versus beyond the 25% red-flag line) and Magic Formula return on capital 434% instead of 175%.
 - **Unavailable is not the same as none.** If the insider (Form 4) feed fails, for example from an SEC rate limit, the insider figures show n/a, the Buffett insider test shows n/a, and Graham says its insider adjustment was not applied. Before this, a failed lookup was read as "no insider selling", which removed Graham's penalty and passed the Buffett test; a genuinely empty feed (no trades) is still a real zero.
 - Buffett star averages round half up (4.5 stars is 5); Python's default rounding sent 4.5 to 4 and 3.5 to 4.
-- The CLI is limited to 10 API calls per second. The backend batches calls and caches them: in memory for 15 minutes, and per ticker on disk for 30 minutes (see [Data cache](#data-cache-per-ticker)).
+- The CLI is limited to 10 API calls per second. The backend batches calls and caches them: in memory for 15 minutes at most, and per ticker on disk (fundamentals for `DISK_CACHE_MINUTES`, market data for `LIVE_CACHE_MINUTES`; see [Data cache](#data-cache-per-ticker)).
 - The Graham and Buffett frameworks suit long-horizon investors. For a holding period under 3 years, the app shows a warning that these are not the right lenses.
 - The verdict wording is neutral and factual (for example, "meets Graham NCAV criteria"). It is not a buy or sell recommendation.
 - **Industry median for P/E, P/B and P/S; peer median for the rest.** The multiples use Longbridge's industry medians, the only ones the CLI offers. Margins, returns, growth and leverage are set against ten peers that the app measures with its own code (see [Industry comparison](#industry-comparison)). Longbridge's own peer table (`compare`) is not used for them because its definitions differ from the app's: for AAPL its P/E is 44.2 (last fiscal year's EPS) against the app's 38.4 (trailing twelve months), and its ROE is 148.8% against 171.4%. The `industry-rank` totals (revenue, net profit and their growth) are size-weighted, so a dominant company is mostly compared with itself (Apple is about three-quarters of its own industry's net profit). Checked live: the multiples on AAPL.US, MSFT.US, 700.HK and QUBT.US (a loss-maker), and the peer comparison on AAPL.US, MSFT.US, NVDA.US and 700.HK.

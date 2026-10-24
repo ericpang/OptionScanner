@@ -1,8 +1,8 @@
 """Orchestrates data fetching and the calculators for each API endpoint."""
-from datetime import datetime
+from datetime import date, datetime
 from typing import Optional
 
-from . import avwap, benchmarks, buffett, chart, config, flows, graham, metrics as M, news, obv, peers, quality as Q, reconcile, risks, sessions, thesis, valuation
+from . import avwap, benchmarks, buffett, chart, config, flows, graham, metrics as M, news, obv, peers, pricehist, quality as Q, reconcile, risks, sessions, thesis, twostage, valuation
 from .data import Data, DataError, InputError
 from .util import SYMBOL_RE, num
 
@@ -26,9 +26,9 @@ def _snapshot(quote: dict) -> dict:
 
 
 def _bar_final(d: Data, sym: str, klines: list) -> bool:
-    """Whether the newest bar is a finished session. Depends on when the data was fetched, which for a cached page is
-    earlier than now, so ask after the kline call: the cache file's time is then known."""
-    return sessions.is_final(sym, klines[-1]["t"], datetime.fromisoformat(d.fetched_at()))
+    """Whether the newest bar is a finished session. Depends on when the bars were fetched, which for a cached page is
+    earlier than now, so ask after the kline call: the time of that call is then known."""
+    return sessions.is_final(sym, klines[-1]["t"], datetime.fromisoformat(d.fetched_at("kline")))
 
 
 def get_chart(d: Data, sym: str, range_: str, bins: int, days: Optional[int] = None) -> dict:
@@ -125,7 +125,7 @@ def analyze(d: Data, sym: str) -> dict:
     short = d.call("short_interest", sym)
     _fill_shares(d, stm, quote)
     _check_currency(d, sym, stm)
-    fetched = d.fetched_at()   # the cache file's time when the data came from it, so the appendix stays truthful
+    fetched = d.fetched_at()   # the oldest of the data used so far (the file's, when it came from the cache): the page stays truthful
     period = stm["annual"][-1].get("period")
 
     base = {"symbol": sym, "mode": d.mode, "snapshot": _snapshot(quote), "fetched_at": fetched,
@@ -172,7 +172,7 @@ def analyze(d: Data, sym: str) -> dict:
     th["verdict"]["summary"] = thesis.summary(len(th["bull"]), len(crit["items"]), qual)   # the page shows the merged bear case
     base.update(
         metrics=m, benchmarks=bench, quality=qual, valuation=val, bull=th["bull"], bear=th["bear"], risks=crit, levels=th["levels"], verdict=th["verdict"],
-        sources=_sources(period, fetched, d.mode),
+        sources=_sources(period, d.fetched_at, d.mode),
         narrative=thesis.narrate({"symbol": sym, "bull": th["bull"], "verdict": th["verdict"],
                                   "bear": [{"title": x["title"], "evidence": "; ".join(x["facts"]), "source": x["source"]} for x in crit["items"]]}),
         warnings=list(d.warnings))
@@ -229,6 +229,37 @@ def get_peers(d: Data, sym: str, refresh: bool = False) -> dict:
             "excluded": excluded, "metrics": benchmarks.compare_peers(mine, usable)}
 
 
+def get_filter(d: Data, sym: str, inputs: dict) -> dict:
+    """The Two-Stage Stock Filter for one stock (twostage.py). It reads the statements, quote, bars and consensus the other panels
+    already fetched, and fetches what only it needs: the quarterly summary history, short interest, unadjusted bars, splits and the
+    S&P 500 proxy. Each of those is optional. One that cannot be fetched leaves the tests that need it UNKNOWN, with the reason on the
+    page, and the other tests still run. The calls are made one after another, not together: the data service answers a burst of them with its
+    one-second limit (code 429002), and the section loads beside the other panels."""
+    quote = d.call("quote", sym, optional=False)
+    stm = d.call("statements", sym, optional=False)
+    rec = reconcile.run(stm, quote)
+    if rec["status"] == "fail":
+        return {"symbol": sym, "status": "unavailable", "inputs": inputs,
+                "message": "This company's own statements fail the reconciliation checks, so the filter does not score it. " + rec["summary"]}
+    # Longbridge's quote carries no currency (it is empty for AAPL and for Tencent), and a listing trades in its market's: that is the
+    # currency a return is in, whatever currency the company reports its statements in.
+    quote = {**quote, "currency": quote.get("currency") or MARKET_CCY.get(sym.rsplit(".", 1)[-1], "")}
+    klines = _klines(d, sym)
+    bar = klines[-1] if len(klines) < 2 or _bar_final(d, sym, klines) else klines[-2]   # the latest completed session
+    end = bar["t"]
+    spy = None
+    if quote.get("currency") == "USD":   # the S&P 500 is in dollars: a stock in another currency is not compared with it
+        spy = {"start": d.call("adj_close", "SPY.US", pricehist.months_back(end, 12 * config.TS_TSR_YEARS)),
+               "end": d.call("adj_close", "SPY.US", end)}
+    facts = {"symbol": sym, "mode": d.mode, "today": date.today().isoformat(), "quote": quote, "stm": stm,
+             "klines": klines, "end_date": end, "price": bar["c"], "analyst": d.call("analyst", sym),
+             "report": d.call("report_history", sym), "short": d.call("short_interest_detail", sym),
+             "raw": d.call("kline_raw", sym, config.TS_BARS), "splits": d.call("splits", sym),
+             "earnings": d.call("earnings_date", sym, quiet=True), "spy": spy}
+    facts["fetched_at"] = d.fetched_at()   # the oldest of what the filter used: the fundamentals, not the prices fetched this hour
+    return twostage.build(facts, inputs)
+
+
 MARKET_CCY = config.MARKET_CURRENCY
 
 
@@ -261,34 +292,36 @@ def _fill_shares(d: Data, stm: dict, quote: dict) -> None:
             d.warnings.append(msg)
 
 
-def _sources(period, fetched, mode) -> list:
+def _sources(period, fetched_at, mode) -> list:
+    """The Data sources table. `fetched_at(*calls)` says when the named calls were fetched; a row shows the oldest of the calls
+    it rests on, because a cached page holds market data and fundamentals that were fetched at different times."""
     src = "demo generator" if mode == "demo" else "Longbridge CLI"
     rows = [
-        ("P/E (TTM)", "price / sum of last 4 quarters diluted EPS", "quote; financial-statement IS qf"),
-        ("PEG", "P/E / EPS growth % (forward consensus, else 3y EPS CAGR) - derived", "institution-rating, forecast-eps; financial-statement IS af"),
-        ("FCF growth", "FCF = operating CF - capex; YoY and CAGR - derived", "financial-statement CF"),
+        ("P/E (TTM)", "price / sum of last 4 quarters diluted EPS", "quote; financial-statement IS qf", ("quote", "statements")),
+        ("PEG", "P/E / EPS growth % (forward consensus, else 3y EPS CAGR) - derived", "institution-rating, forecast-eps; financial-statement IS af", ("quote", "statements", "analyst")),
+        ("FCF growth", "FCF = operating CF - capex; YoY and CAGR - derived", "financial-statement CF", ("statements",)),
         ("Free cash flow to equity", "operating CF - capex + debt issued - debt repaid, TTM (last fiscal year when there are not "
-                                     "four quarters); margin = FCFE / revenue, yield = FCFE / market cap - derived", "financial-statement CF, IS; quote"),
-        ("Debt/EBITDA", "(ST + LT debt) / (operating income + D&A, TTM) - derived", "financial-statement BS, IS, CF"),
-        ("Operating margin", "operating income / revenue", "financial-statement IS"),
-        ("ROIC", "operating income x (1 - tax rate) / average (equity + debt - cash) - derived", "financial-statement IS, BS"),
-        ("ROE", "net income / average equity", "financial-statement IS, BS"),
-        ("Net income growth", "YoY, 3y and 5y CAGR (None when base <= 0)", "financial-statement IS"),
+                                     "four quarters); margin = FCFE / revenue, yield = FCFE / market cap - derived", "financial-statement CF, IS; quote", ("statements", "quote")),
+        ("Debt/EBITDA", "(ST + LT debt) / (operating income + D&A, TTM) - derived", "financial-statement BS, IS, CF", ("statements",)),
+        ("Operating margin", "operating income / revenue", "financial-statement IS", ("statements",)),
+        ("ROIC", "operating income x (1 - tax rate) / average (equity + debt - cash) - derived", "financial-statement IS, BS", ("statements",)),
+        ("ROE", "net income / average equity", "financial-statement IS, BS", ("statements",)),
+        ("Net income growth", "YoY, 3y and 5y CAGR (None when base <= 0)", "financial-statement IS", ("statements",)),
         ("Fair value (app estimate)", "DCF of free cash flow (operating CF - capex) with growth fade; earnings power value; Graham number. "
-                                      "Not GuruFocus's GF Value - derived", "financial-statement CF, IS, BS; quote; consensus"),
-        ("Quality scorecards", "Piotroski 2000, Altman 1968, Beneish 1999, Sloan 1996, Greenblatt - derived", "financial-statement BS, IS, CF"),
-        ("EMA / volume profile", "EMA seeded with SMA; profile spreads each bar's volume across its range", "kline day"),
+                                      "Not GuruFocus's GF Value - derived", "financial-statement CF, IS, BS; quote; consensus", ("statements", "quote", "analyst")),
+        ("Quality scorecards", "Piotroski 2000, Altman 1968, Beneish 1999, Sloan 1996, Greenblatt - derived", "financial-statement BS, IS, CF", ("statements", "quote")),
+        ("EMA / volume profile", "EMA seeded with SMA; profile spreads each bar's volume across its range", "kline day", ("kline",)),
         ("Anchored VWAP", "sum(typical price x volume) / sum(volume) from the anchor (N trading days back, default 20) to the "
-                          "latest closed session; typical price = (H+L+C)/3 - derived", "kline day"),
-        ("Flow indicators", "OBV, A/D line, CMF(20), up/down volume - derived from daily bars", "kline day"),
+                          "latest closed session; typical price = (H+L+C)/3 - derived", "kline day", ("kline",)),
+        ("Flow indicators", "OBV, A/D line, CMF(20), up/down volume - derived from daily bars", "kline day", ("kline",)),
         ("OBV insights", "OBV = running total of volume, added on an up close and subtracted on a down close. Price, volume and OBV "
                          "direction over the last 20 sessions are looked up in a 27-row table; divergence = a new 60-session high or "
-                         "low in the close that OBV does not confirm - derived", "kline day"),
-        ("Insider / holders", "Form 4 open-market buys and sells; institutional shareholder list", "insider-trades; shareholder"),
-        ("Capital flow", "net flow by order size", "capital --flow"),
-        ("Short interest", "short-positions rate (US and HK only)", "short-positions"),
+                         "low in the close that OBV does not confirm - derived", "kline day", ("kline",)),
+        ("Insider / holders", "Form 4 open-market buys and sells; institutional shareholder list", "insider-trades; shareholder", ("insider", "ownership")),
+        ("Capital flow", "net flow by order size", "capital --flow", ("capital_flow",)),
+        ("Short interest", "short-positions rate (US and HK only)", "short-positions", ("short_interest",)),
         ("Industry median (P/E, P/B, P/S)", "median over the companies in the stock's industry that have a positive value; percentile = "
-                                            "share of the others the stock is above. Longbridge's figures, set beside the metric cards' own", "industry-valuation dist"),
+                                            "share of the others the stock is above. Longbridge's figures, set beside the metric cards' own", "industry-valuation dist", ("industry_valuation",)),
     ]
-    return [{"field": f, "formula": fm, "source": f"{src}: {s}", "fetched_at": fetched, "period": period or "n/a"}
-            for f, fm, s in rows]
+    return [{"field": f, "formula": fm, "source": f"{src}: {s}", "fetched_at": fetched_at(*calls), "period": period or "n/a"}
+            for f, fm, s, calls in rows]

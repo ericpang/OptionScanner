@@ -14,8 +14,9 @@ def _rng(symbol: str) -> np.random.Generator:
     return np.random.default_rng(int(hashlib.sha256(symbol.encode()).hexdigest()[:8], 16))
 
 
-def _statements(symbol: str):
-    rng = _rng(symbol + "fin")
+def _quarters(symbol: str) -> list:
+    """Twenty-four quarters of synthetic statements, oldest first. Fresh dicts on every call: callers fill in and edit them."""
+    rng, sbc_rng = _rng(symbol + "fin"), _rng(symbol + "sbc")
     rev0 = float(rng.uniform(8e9, 80e9)) / 4
     growth_y = float(rng.uniform(0.02, 0.14))
     gm = float(rng.uniform(0.28, 0.62))
@@ -57,9 +58,11 @@ def _statements(symbol: str):
         total_assets = equity + total_liab
         cur_assets = cash + ar + inv + other_ca
         other_nc_plug = total_assets - cur_assets - ppe
+        sbc = rev * float(sbc_rng.uniform(0.01, 0.06))   # its own generator: drawing from `rng` would change every other synthetic figure
         quarters.append({
-            "period": f"Q{i % 4 + 1}-Y{i // 4 + 1}",
-            "revenue": rev, "gross_profit": gp, "operating_income": opi, "net_income": ni,
+            "period": f"Q{i % 4 + 1}-Y{i // 4 + 1}", "fy": 2021 + i // 4, "fp": i % 4 + 1,
+            "revenue": rev, "gross_profit": gp, "operating_income": opi, "net_income": ni, "sbc": sbc,
+            "borrow_st": debt_st, "borrow_cp": 0.0, "borrow_lt": debt_lt, "lease_cp": 0.0, "lease_lt": 0.0, "cp_total": 0.0,
             "eps": ni / shares, "interest_expense": interest, "pretax_income": pretax, "tax": tax,
             "da": da, "sga": sga, "shares": shares,
             "total_assets": total_assets, "current_assets": cur_assets,
@@ -70,11 +73,16 @@ def _statements(symbol: str):
             "ocf": ocf, "capex": capex, "dividends_paid": -div, "buybacks": -buyback,
             "debt_issued": issued, "debt_repaid": repaid, "net_cash_change": d_cash,
         })
+    return quarters
+
+
+def _statements(symbol: str):
+    quarters = _quarters(symbol)
     flow = ["revenue", "gross_profit", "operating_income", "net_income", "eps", "interest_expense",
             "pretax_income", "tax", "da", "sga", "ocf", "capex", "dividends_paid", "buybacks",
-            "debt_issued", "debt_repaid", "net_cash_change"]
+            "debt_issued", "debt_repaid", "net_cash_change", "sbc"]
     annual = []
-    for y in range(nq // 4):
+    for y in range(len(quarters) // 4):
         grp = quarters[y * 4:(y + 1) * 4]
         a = dict(grp[-1])
         a["period"] = f"FY{y + 1}"
@@ -120,6 +128,41 @@ class DemoProvider:
     def kline(self, symbol, count):
         return _kline(symbol, count)
 
+    def kline_raw(self, symbol, count):
+        """The synthetic market has no splits or dividends, so the unadjusted bars are the adjusted ones: the latest `count` of the same series."""
+        return _kline(symbol, 1500)[-count:]
+
+    def adj_close(self, symbol, on):
+        from .data import DataError
+        bars = [b for b in _kline(symbol, 1500) if b["t"] <= on]
+        if not bars:
+            raise DataError(f"{symbol} has no daily bar on or before {on}")
+        return {"date": bars[-1]["t"], "close": bars[-1]["c"]}
+
+    def splits(self, symbol):
+        return []
+
+    def report_history(self, symbol):
+        """The summary figures `financial-report` gives, built from the same 24 synthetic quarters as the statements."""
+        qs, today = _quarters(symbol), date.today()
+        row = lambda q, period, fp, end: {"period": period, "fy": q["fy"], "fp": fp, "end": end.isoformat(), "revenue": q["revenue"],
+                                          "operating_income": q["operating_income"], "net_income": q["net_income"], "eps": q["eps"],
+                                          "gross_margin": q["gross_profit"] / q["revenue"]}
+        quarterly = [row(q, f"Q{q['fp']} {q['fy']}", q["fp"], today - timedelta(days=91 * (len(qs) - 1 - i))) for i, q in enumerate(qs)]
+        annual = []
+        for y in range(len(qs) // 4):
+            grp = qs[y * 4:(y + 1) * 4]
+            a = {k: sum(q[k] for q in grp) for k in ("revenue", "operating_income", "net_income", "eps", "gross_profit")}
+            annual.append(row({**a, "fy": grp[0]["fy"]}, f"FY {grp[0]['fy']}", None, today - timedelta(days=365 * (len(qs) // 4 - 1 - y))))
+        return {"quarterly": quarterly, "annual": annual}
+
+    def short_interest_detail(self, symbol):
+        rng = _rng(symbol + "si")
+        float_shares = float(self.quote(symbol)["shares"]) * 0.95
+        rate = float(rng.uniform(0.005, 0.09))
+        return {"rate": rate, "shares_short": rate * float_shares, "date": (date.today() - timedelta(days=14)).isoformat(),
+                "float_shares": float_shares, "days_to_cover": 2.5}
+
     def quote(self, symbol):
         st = _statements(symbol)
         k = _kline(symbol, 1500)
@@ -140,11 +183,12 @@ class DemoProvider:
     def analyst(self, symbol):
         rng = _rng(symbol + "an")
         px = _kline(symbol, 1500)[-1]["c"]
+        buy, hold, sell = int(rng.integers(8, 30)), int(rng.integers(3, 15)), int(rng.integers(0, 6))
+        target, growth = px * float(rng.uniform(0.9, 1.3)), float(rng.uniform(0.04, 0.20))
+        eps_ttm = sum(q["eps"] for q in _quarters(symbol)[-4:])
         return {
-            "buy": int(rng.integers(8, 30)), "hold": int(rng.integers(3, 15)), "sell": int(rng.integers(0, 6)),
-            "target_mean": px * float(rng.uniform(0.9, 1.3)),
-            "eps_growth_forward": float(rng.uniform(0.04, 0.20)),
-            "eps_forward": None, "eps_forward_90d": None,
+            "buy": buy, "hold": hold, "sell": sell, "target_mean": target, "eps_growth_forward": growth,
+            "eps_forward": eps_ttm * (1 + growth), "eps_forward_date": date.today().isoformat(), "eps_forward_90d": None,
             "surprises": [float(x) for x in rng.normal(0.03, 0.04, 4)],
         }
 

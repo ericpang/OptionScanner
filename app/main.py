@@ -1,11 +1,12 @@
 """FastAPI app: JSON endpoints under /api, static single-page UI at /."""
 from pathlib import Path
+from typing import Optional
 
 from fastapi import FastAPI, Query
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import config, service
+from . import config, service, twostage
 from .data import DataError, InputError, get_data
 
 app = FastAPI(title="Stock Deep-Dive: Bull & Bear Case")
@@ -64,6 +65,19 @@ def filings(symbol: str):
 def peers(symbol: str, refresh: bool = False):
     """The stock against its industry peers. The first search of an industry takes about 40 seconds."""
     return _run(service.get_peers, symbol, refresh)
+
+
+@app.get("/api/filter")
+def two_stage_filter(symbol: str, avg_fwd_pe: Optional[float] = Query(None, gt=0, le=1000), avg_fwd_pe_src: str = Query("", max_length=200),
+                     eps_cagr: Optional[float] = Query(None, ge=-100, le=500), eps_cagr_src: str = Query("", max_length=200),
+                     category: str = Query("auto", pattern="^(auto|software|hardware)$"), stage2: bool = False, q4: bool = False,
+                     q5: Optional[int] = Query(None, ge=1, le=3), q6: Optional[int] = Query(None, ge=1, le=3),
+                     q7: Optional[int] = Query(None, ge=1, le=3), q8: Optional[int] = Query(None, ge=1, le=3)):
+    """The Two-Stage Stock Filter. The query holds what only the user can supply: the stock's five-year average forward P/E, a three-to-five-year
+    expected EPS growth (a percentage number, 12 for 12%), a software or hardware choice, whether to run stage two anyway, whether question 4's
+    thesis is confirmed, and ratings of 1 to 3 for the judgment questions 5 to 8."""
+    inputs = twostage.clean_inputs(avg_fwd_pe, avg_fwd_pe_src, eps_cagr, eps_cagr_src, category, stage2, q4, q5, q6, q7, q8)
+    return _run(service.get_filter, symbol, inputs)
 
 
 @app.get("/api/chart")

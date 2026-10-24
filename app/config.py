@@ -1,5 +1,9 @@
 """Settings and the bull/bear thresholds (defaults from the README; change them here)."""
+import ast
+import math
+import operator
 import os
+import sys
 from pathlib import Path
 
 
@@ -22,21 +26,92 @@ def _clamp_int(raw, default: int, lo: int, hi: int) -> int:
         return default
 
 
+_ARITH = {ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul, ast.Div: operator.truediv}
+
+
+def _arith(node) -> float:
+    """The value of a parsed number, or of numbers combined with + - * / and brackets. Nothing else is evaluated."""
+    if isinstance(node, ast.Expression):
+        return _arith(node.body)
+    if isinstance(node, ast.Constant) and type(node.value) in (int, float):
+        return float(node.value)
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+        return _arith(node.operand) * (-1 if isinstance(node.op, ast.USub) else 1)
+    if isinstance(node, ast.BinOp) and type(node.op) in _ARITH:
+        return _ARITH[type(node.op)](_arith(node.left), _arith(node.right))
+    raise ValueError("not arithmetic")
+
+
+def _minutes(name: str, default: float) -> float:
+    """A lifetime in minutes from the environment: a number, or numbers multiplied or added, such as 60*24*7 for a week (the way a
+    long one is easiest to write). Negative counts as 0. Anything else is reported and the default is used, so that a typo cannot
+    keep the server from starting."""
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = _arith(ast.parse(raw.strip(), mode="eval"))
+        if not math.isfinite(value):
+            raise ValueError("not finite")
+    except (SyntaxError, ValueError, ZeroDivisionError, OverflowError, RecursionError):
+        print(f"config: {name}={raw!r} is not a number of minutes; using {default:g}", file=sys.stderr)
+        return default
+    return max(0.0, value)
+
+
 _load_env()
 
 DATA_MODE = os.environ.get("DATA_MODE", "cli").lower()  # cli | demo
-# In-memory cache lifetimes (app/data.py). Freshness is set by DISK_CACHE_MINUTES; memory never outlives the disk cache.
+# In-memory cache lifetimes (app/data.py). Freshness is set by DISK_CACHE_MINUTES and LIVE_CACHE_MINUTES; memory never outlives either.
 MEMORY_TTL = 900   # synthetic demo data, which has no disk cache
-DEDUPE_TTL = 5     # live data with the disk cache off: just long enough for panels loading together to share one fetch
+DEDUPE_TTL = 5     # live data that is not kept on disk: just long enough for panels loading together to share one fetch
 FAIL_TTL = 45  # a failed call is remembered this long, so a rate-limited source is not hit again by every panel
+RATING_TTL = 60   # institution-rating is read by the quote (industry name) and by the analyst call; one search shares a fetch, no more
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
-# Per-ticker cache files in DATA_DIR (app/snapshot.py): a search within this many minutes of the last fetch reuses it.
-DISK_CACHE_SECONDS = int(float(os.environ.get("DISK_CACHE_MINUTES", "30")) * 60)   # 0 turns the disk cache off
+# Per-ticker cache files in DATA_DIR (app/snapshot.py). A file, and the fundamentals in it (STATIC_CALLS below), is reused for this many
+# minutes after it was made: a week (10080) is reasonable, since statements, ratings and holders change a quarter at a time.
+DISK_CACHE_SECONDS = int(_minutes("DISK_CACHE_MINUTES", 30) * 60)   # 0 turns the disk cache off
+# The market data in that file (LIVE_CALLS below) is fetched again once it is this old, however long the file lives. Never longer than
+# DISK_CACHE_MINUTES; 0 fetches it on every search.
+LIVE_CACHE_SECONDS = int(_minutes("LIVE_CACHE_MINUTES", 60) * 60)
 # The SEC refuses requests that do not say who is asking: your name and email, e.g. "Jane Doe jane@example.com".
 SEC_USER_AGENT = os.environ.get("SEC_USER_AGENT", "").strip()
 GEMINI_API_KEY =os.environ.get("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")  # any model your key can use
 CLI_TIMEOUT = 60
+
+# ---- which data calls change by the hour (snapshot.py) ----------------------------------------------
+# The data providers' calls, by how fast their answers change. The ticker's cache file holds each call in LIVE_CALLS for LIVE_CACHE_MINUTES
+# and each in STATIC_CALLS for as long as the file lives. A call belongs in exactly one set (a test holds the providers to that); one that is
+# in neither is treated as market data, so a new data call is never frozen for a week by accident.
+LIVE_CALLS = frozenset({
+    "quote",                # price, market cap, P/E, P/B, 52-week range, the extended-hours print
+    "kline", "kline_raw",   # daily bars: the newest is still forming during a session, and a dividend moves the adjusted older ones
+    "industry_valuation",   # the industry's median P/E, P/B, P/S and the stock's rank move with prices; benchmarks.py drops the rank when
+                            # this figure and the metric card's own drift apart, so it has to be as fresh as the quote
+    "splits",               # a split rescales every bar, and kline_raw is adjusted with this list (pricehist.split_adjust): as fresh as the bars
+    "capital_flow",         # the latest session's money flow by order size
+    "news", "filings", "topics", "market_temp",   # headlines, the SEC filing list, community posts, the market's temperature
+    "option_expiries", "option_chain", "option_quotes", "option_volume_daily",   # option prices, IV and volume
+    "earnings_date",        # the next date from today on: the answer depends on the day it was asked, so it cannot wait a week
+})
+STATIC_CALLS = frozenset({
+    "statements", "report_history",         # change when the company reports, a quarter at a time
+    "analyst",                              # ratings, target price and consensus estimates, revised now and then
+    "dividends", "insider", "ownership",    # dividend history, Form 4 filings, 13F holders
+    "short_interest", "short_interest_detail",   # published twice a month
+    "sec_disclosures",                      # the latest 10-K and 10-Q text
+    "industry_members",                     # the companies of the industry, which only picks the peers by size
+    "adj_close",                            # a past session's adjusted close, asked for by date
+    "news_detail",                          # one article's text
+    "peers",                                # nothing to fetch (a stub)
+})
+
+
+def is_live_call(name: str) -> bool:
+    """Whether the data call changes by the hour (and so is fetched again after LIVE_CACHE_MINUTES). Unknown calls count as live."""
+    return name not in STATIC_CALLS
+
 
 NEWS_DEFAULT = 10
 NEWS_MAX = 25
@@ -66,6 +141,32 @@ OBV_MA_DAYS = 20            # the moving average drawn over the OBV line on the 
 OBV_DIVERGENCE_DAYS = 60    # divergence looks at this many sessions; the last OBV_DIVERGENCE_RECENT are "recent" and the
 OBV_DIVERGENCE_RECENT = 10  # sessions before them are what a new high or low is judged against
 OBV_DIVERGENCE_GAP = 0.05   # OBV must fall short of its earlier extreme by this share of the window's volume to count
+
+# ---- the Two-Stage Stock Filter (twostage.py) ---------------------------------------------------------
+# The checklist's own cut-offs (Reset & Invest, v2.1), not this app's. Whether a figure equal to its cut-off passes is
+# decided in twostage.py, which words each comparison the way the checklist does ("above" and "under" are strict).
+TS_NET_DEBT_EBITDA_MAX = 1.5   # check 1: net debt / positive TTM EBITDA strictly below this (or cash pool above debt)
+TS_FCF_MARGIN_MIN = 0.15       # check 2: TTM free cash flow / revenue at least this
+TS_ROIC_MIN = 0.15             # check 2: TTM ROIC strictly above this
+TS_SBC_MAX = 0.10              # check 2: TTM stock-based compensation / revenue strictly below this
+TS_PEG_MAX = 1.5               # check 3: PEG at or below this passes ...
+TS_PEG_REVIEW_MAX = 2.0        # ... above it and at or below this is a review, not a fail; above this fails
+TS_PRICE_RISE_MAX = 0.50       # check 3: price rise over three calendar months strictly below this
+TS_GROWTH_MIN = 0.10           # question 1: TTM revenue growth strictly above this
+TS_GM_SOFTWARE = 0.50          # question 1: TTM gross margin strictly above this for software ...
+TS_GM_HARDWARE = 0.35          # ... and this for hardware
+TS_OPM_MIN = 0.20              # question 1: TTM operating margin strictly above this
+TS_SHORT_MAX = 0.05            # question 2: short interest / float strictly below this scores the point
+TS_SHORT_MAX_AGE_DAYS = 60     # ... but only for a report this recent: FINRA publishes twice a month, and Longbridge's history for some
+                               # stocks (JPM, KO) stops in June 2022, which is not "the latest reported" short interest
+TS_LIST_AT = 7                 # of 8: this many or more makes the list ...
+TS_CLOSE_CALL = 6.5            # ... and this many is a close call
+TS_TSR_YEARS = 5               # question 3: total return and share count are compared over this many years
+# What the data can and cannot settle, so a result inside the data's own error is called UNKNOWN, not a pass or a fail:
+TS_TSR_MARGIN = 0.01           # a 5-year return within this (cumulative, 1 point) of the S&P 500 proxy is too close to call
+TS_TAX_LOW, TS_TAX_HIGH = 0.10, 0.35   # an effective tax rate outside this range is flagged as distorting NOPAT
+TS_BARS = 600                  # unadjusted daily bars fetched: two years of closes for the 200-day EMA, with room to spare
+TS_PIVOT_SIDE = 2              # a pivot is strictly above (below) the two highs (lows) on either side, so two sessions confirm it
 
 # Assumptions used for the ROIC vs. WACC test (stated in the UI)
 RISK_FREE = 0.043

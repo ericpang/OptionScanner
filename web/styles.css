@@ -71,6 +71,19 @@ th { color: var(--muted); font-weight: 600; }
 .ptable th:first-child, .ptable td:first-child { position: sticky; left: 0; background: var(--card); }
 .ptable td:nth-child(2) { background: var(--info-bg); }
 .stars { letter-spacing: 1px; color: var(--warn); }
+/* the two-stage filter: notes under a table figure, the kind of evidence, the inputs form (the global `form` rule is the search box's) */
+#filter td .s, #filter .pt .s, #filter .tsf-grid .s { font-size: 12px; color: var(--muted); }
+#tsform { display: block; }
+.kind { font-size: 11px; font-weight: 600; letter-spacing: .03em; color: var(--muted); }
+.tsf summary { cursor: pointer; font-size: 13px; color: var(--muted); margin-top: 6px; }
+.tsf-grid { display: grid; gap: 12px 20px; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
+.tsf-grid label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+.tsf-grid input, .tsf-grid select, .tsf-grid textarea { width: 100%; max-width: none; }
+.tsf-grid label.chk, label.chk { flex-direction: row; align-items: center; gap: 6px; }
+textarea { font: inherit; padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--ink); resize: vertical; }
+.rate { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-top: 4px; } .rate label { font-size: 13px; display: flex; gap: 4px; align-items: center; }
+input[type=radio] { width: auto; }
+button:disabled { opacity: .5; cursor: not-allowed; }
 ul.plain { margin: 6px 0; padding-left: 18px; } ul.plain li { margin: 2px 0; }
 .news-item { padding: 10px 0; border-top: 1px solid var(--line); } .news-item:first-of-type { border-top: 0; }
 .news-item .meta { font-size: 12px; color: var(--muted); } .news-item p { margin: 4px 0 0; font-size: 13px; color: var(--muted); }
