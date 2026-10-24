@@ -13,40 +13,33 @@ All market data comes from [Longbridge](https://open.longbridge.com). The analys
 1. The user enters a symbol in `<CODE>.<MARKET>` format.
 2. The backend pulls quotes, financials, valuation, insider and news data from Longbridge.
 3. It runs three analysis lenses (below) and checks that the financial statements agree with each other before it scores anything.
-4. It builds the **bull case** and **bear case**, each with cited evidence, and shows them side by side with a verdict card.
-5. Every figure links back to a **Data Source appendix** listing its source, fetch time and period.
-6. The **Options** panel reads the option chain, judges whether implied volatility is rich or cheap, and builds candidate option trades that fit the stock's bull or bear view, with payoff, breakevens, Greeks and risk flags (see [Option trade scanner](#option-trade-scanner)).
+4. It builds the **bull case** and **bear case**, each with cited evidence, and shows them side by side under a verdict card.
+5. Every figure links back to the **Data sources** table (a box at the bottom of the page) listing its source, fetch time and period.
+6. The **Options** tab reads the option chain, judges whether implied volatility is rich or cheap, and builds candidate option trades that fit the stock's bull or bear view, with payoff, breakevens, Greeks and risk flags (see [Option trade scanner](#option-trade-scanner)).
 
 ### Pages / UI
 
-| Section | Contents |
+The page is a header and **seven tabs**, one for each group of related analyses. A search opens on **Overview**, which gives the answer first; the other tabs hold the detail behind it. The tab you leave open stays open for the next search, so two stocks can be compared on the same tab. The left and right arrow keys move along the tabs, and Home and End go to the first and the last.
+
+| Where | Contents |
 |---|---|
-| Cache note | Only when the page was built from the data cache: how old the fundamentals and the market data are, and when each will be fetched again (see [Data cache](#data-cache-per-ticker)) |
-| Header | Symbol, price, market cap, PE/PB, 52-week range |
-| Key Metrics | P/E (TTM), PEG, FCF growth, Debt/EBITDA, analyst ratings, operating margin, ROIC, ROE, net income growth, plus the additional metrics (see [Key metrics](#key-metrics)) |
-| Price Chart | Daily candles, EMA 20/50/200, volume and volume profile with POC and value area (see [Price chart](#price-chart-daily-candles-ema-2050200-and-volume-profile)) |
-| Technical insights | Two panels under the chart. The anchored VWAP read of the latest closed session: one of six price-and-volume conclusions, colour-coded; the number of days is configurable (see [Anchored VWAP](#anchored-vwap-avwap-and-the-volume-matrix)). And the On-Balance Volume read: price, volume and OBV direction matched to a 27-row table, plus a price/OBV divergence test (see [On-Balance Volume](#on-balance-volume-obv-insights)) |
-| Business & Moat | Moat type and width, pricing power, industry runway |
-| Financial Health | ROE history, FCF, leverage, margins, capex intensity |
-| Bear case | One list of every concern the data shows, merged from the rule-based bear points and the broader critic checks, (valuation, slowing growth, leverage and liquidity, earnings quality, dilution, insider selling, price action), grouped by theme, each with the figures behind it and a high / medium / low rating. Risks that only the company's filings can show, such as customer concentration, are listed as not measured, with links to the latest annual and quarterly filings (`app/risks.py`; thresholds are this app's own). With `SEC_USER_AGENT` set in `.env`, the app also reads the latest 10-K and newer 10-Q from SEC EDGAR (`app/sec.py`) and shows, verbatim and unscored, the company's own summary of risk factors and any sentence that gives a customer's share of revenue; it is a text search and can miss or mis-catch, so confirm in the filing |
-| Fair value estimate | App-built DCF, earnings power value and Graham number, a sensitivity grid, and a reverse DCF; explicitly not GF Value (see [Fair value estimate](#fair-value-estimate-not-gf-value)) |
-| Institutional Flows | 13F holder changes, insider trades, large-order capital flow, OBV / CMF, and an Accumulation / Neutral / Distribution read (see [Institutional buying and selling](#institutional-buying-and-selling)) |
-| Options | IV vs HV, term structure and skew, put/call volume, and candidate option trades with payoff, breakevens, Greeks and risk flags; a **Scan** page ranks candidates across a list of symbols (see [Option trade scanner](#option-trade-scanner)) |
-| Quality Scorecard | Piotroski F, Altman Z, Beneish M, Sloan accruals, Magic Formula, Graham, Buffett and ROIC vs. WACC, each with its published thresholds (see [Stock quality scorecard](#stock-quality-scorecard)) |
-| Two-stage filter | The Reset & Invest checklist: three pass/fail checks, then eight scored questions, with a source and period beside every figure, what to verify first, and a form for the figures only you can supply (see [Two-stage stock filter](#two-stage-stock-filter)) |
-| News & Market Mood | The latest 10 news items (expandable to 25) plus analyst consensus, market temperature and community activity, with no automated sentiment scoring (see [Latest news and market mood](#latest-news-and-market-mood)) |
-| Management & Insiders | Insider trades, buybacks, dividends, institutional holders |
-| Quant Snapshot | Volatility regime, momentum, seasonality, factor z-scores |
-| **Bull case** (green) | 3–5 evidence-backed arguments plus an upside price band |
-| **Bear case** (red) | 3–5 evidence-backed arguments plus a downside price band |
-| Verdict | Moat stars, Graham score, "great business / wait for price" vs "cheap but no moat" tag, expected holding period |
-| Data Source appendix | Source, fetch time and period for every number, plus the reconciliation result |
+| Above the tabs (always visible) | The status line. A banner when the data is synthetic (demo mode). A banner when some data could not be fetched or had to be approximated; it sits here, not at the bottom of the page, so a caveat is seen whichever tab is open. The cache note, only when the page was built from the data cache: how old the fundamentals and the market data are, and when each will be fetched again (see [Data cache](#data-cache-per-ticker)). The header: symbol, price, market cap, PE/PB, 52-week range. And, only when it happens, the reconciliation failure (see [Reconciliation gate](#reconciliation-gate)), after which the tabs that would have held scores say so instead of being blank |
+| **Overview** | The **verdict** first: the tag from the Buffett framework (for example "Great business, wait for price"), one line counting the supporting and cautionary points and the scorecards that pass, and the written narrative when `GEMINI_API_KEY` is set. Under it the **bull case** and the **bear case** side by side. The bear case is one list of every concern the data shows, merged from the rule-based bear points and the broader critic checks (valuation, slowing growth, leverage and liquidity, earnings quality, dilution, insider selling, price action), grouped by theme, each with the figures behind it and a high / medium / low rating (`app/risks.py`; thresholds are this app's own). Risks that only the company's filings can show, such as customer concentration, are listed as not measured, with links to the latest annual and quarterly filings. With `SEC_USER_AGENT` set in `.env`, the app also reads the latest 10-K and newer 10-Q from SEC EDGAR (`app/sec.py`) and shows, verbatim and unscored, the company's own summary of risk factors and any sentence that gives a customer's share of revenue; it is a text search and can miss or mis-catch, so confirm in the filing |
+| **Fundamentals** | The **quality scorecard**: Piotroski F, Altman Z, Beneish M, Sloan accruals, Magic Formula, Graham, Buffett and ROIC vs. WACC, each with its published threshold (see [Stock quality scorecard](#stock-quality-scorecard)); the Buffett five dimensions and the Graham cigar-butt breakdown behind two of its rows are folded away under it. Then the **key metrics** and the **additional metrics** (see [Key metrics](#key-metrics)), and the **peer group** those metrics are compared with (see [Industry comparison](#industry-comparison)) |
+| **Valuation** | The **fair value estimate**: an app-built DCF, earnings power value and Graham number, a sensitivity grid and a reverse DCF; explicitly not GF Value (see [Fair value estimate](#fair-value-estimate-not-gf-value)). Under it the **reference price levels** (the analyst target, the volume profile's value area, Graham's buy line, the DCF value and the 52-week range, each against the price), and a box for Morningstar's own estimate, which you type in |
+| **Two-stage filter** | The Reset & Invest checklist: three pass/fail checks, then eight scored questions, with a source and period beside every figure, what to verify first, and a form for the figures only you can supply (see [Two-stage stock filter](#two-stage-stock-filter)) |
+| **Price & flows** | The **price chart**: daily candles, EMA 20/50/200, an OBV pane, volume and the volume profile with POC and value area (see [Price chart](#price-chart-daily-candles-ema-2050200-and-volume-profile)). Under it the two **technical insights**: the anchored VWAP read of the latest closed session, one of six price-and-volume conclusions, colour-coded, over a configurable number of days (see [Anchored VWAP](#anchored-vwap-avwap-and-the-volume-matrix)), and the On-Balance Volume read, which matches price, volume and OBV direction to a 27-row table and adds a price/OBV divergence test (see [On-Balance Volume](#on-balance-volume-obv-insights)). Then **institutional buying and selling**: 13F holder changes, insider trades, large-order capital flow, CMF, and an Accumulation / Neutral / Distribution read (see [Institutional buying and selling](#institutional-buying-and-selling)) |
+| **Options** | IV vs HV, term structure and skew, put/call volume, and candidate option trades with payoff, breakevens, Greeks and risk flags (see [Option trade scanner](#option-trade-scanner); a multi-symbol **Scan** page is planned there) |
+| **News** | The latest 10 news items (expandable to 25), plus analyst consensus, market temperature, community activity and short interest, with no automated sentiment scoring (see [Latest news and market mood](#latest-news-and-market-mood)) |
+| Bottom of the page | **Data sources and reconciliation**, a box that starts closed: the source, fetch time and period for every figure, and the result of each reconciliation check |
+
+The tabs are laid out in `web/index.html`; `TABS` and `SECTION_TAB` in `web/app.js` say which section sits in which tab, and `tests/test_layout.py` checks that the two agree. Each section is still filled by its own request, in the order the answers arrive, whichever tab is showing.
 
 ---
 
 ## Key metrics
 
-A **Key Metrics** panel sits under the header. Each metric shows its value, a 5-year trend where it applies, the peer median, and a green/amber/red tag. Each metric is also tied to the bull or bear case.
+The **Key Metrics** panel is in the Fundamentals tab, under the quality scorecard. Each metric shows its value, a 5-year trend where it applies, the peer median, and a green/amber/red tag. Each metric is also tied to the bull or bear case.
 
 | # | Metric | Definition | Data source |
 |---|---|---|---|
@@ -167,13 +160,13 @@ The thresholds are defaults you can change in `app/config.py`.
 - **Net cash.** Debt/EBITDA shows "net cash" when cash exceeds debt.
 - **Missing fields.** Show "n/a" with the reason. Never silently estimate.
 - **Reconciliation.** These metrics use the same statement data as the scoring, so they are blocked if the reconciliation gate fails.
-- **Derived figures.** PEG, ROIC and Debt/EBITDA are calculated by the app, and the appendix marks them as derived with the formula and inputs used.
+- **Derived figures.** PEG, ROIC and Debt/EBITDA are calculated by the app, and the Data sources table marks them as derived with the formula and inputs used.
 
 ---
 
 ## Price chart: daily candles, EMA 20/50/200 and volume profile
 
-A chart panel sits under the Key Metrics panel.
+The chart is the first thing in the **Price & flows** tab.
 
 ### What it shows
 
@@ -413,7 +406,7 @@ The newest bar is handled as in the AVWAP read: if its session was still running
 
 ## Institutional buying and selling
 
-Yes. No single indicator shows what institutions are doing, so the app combines **reported holdings and trades** (what they did, with a delay) with **flow indicators** (what money appears to be doing now). A panel next to the chart shows both, with a net **Accumulation / Neutral / Distribution** read.
+Yes. No single indicator shows what institutions are doing, so the app combines **reported holdings and trades** (what they did, with a delay) with **flow indicators** (what money appears to be doing now). A panel under the chart, in the same tab, shows both, with a net **Accumulation / Neutral / Distribution** read.
 
 ### 1. Reported activity (hard data, but delayed)
 
@@ -432,7 +425,7 @@ The 13F and Form 4 data are real filings, so they are the strongest evidence but
 | **Capital flow by order size** | Net inflow or outflow split into large, medium and small orders. Large-order net flow is the closest proxy for institutional activity. Longbridge's `capital` command returns only the latest session's split by order size, so the app shows that session, not a 20-day history. | `capital` |
 | **Capital distribution** | Today's inflow and outflow broken down by order size (large / medium / small) | `capital` |
 | **HK broker queue** | For HK stocks, which brokers sit on the bid and ask | `brokers` (not wired into the app yet) |
-| **On-Balance Volume (OBV)** | Running total of volume, added on up days and subtracted on down days. Rising OBV with flat price suggests accumulation. | Computed from daily K-lines |
+| **On-Balance Volume (OBV)** | Running total of volume, added on up days and subtracted on down days. Rising OBV with flat price suggests accumulation. It is drawn in its own pane of the price chart, with its own read under the chart, so this panel does not draw it a second time. | Computed from daily K-lines |
 | **Accumulation/Distribution line and Chaikin Money Flow (20)** | Where the close sits within the day's range, weighted by volume. CMF above 0 suggests buying pressure. | Computed from daily K-lines |
 | **Up/down volume ratio (20d, 50d)** | Volume on up days ÷ volume on down days | Computed from daily K-lines |
 | **High-volume days** | Days with volume above 2x the 50-day average, labelled as accumulation (close up, near the high) or distribution (close down, near the low). Marked on the main chart. | Computed from daily K-lines |
@@ -548,7 +541,7 @@ These are shown as reported. The app does **not** classify headlines or posts as
 
 **Morningstar fair value estimate.** Morningstar's number is its analysts' own and has no free data source, so the app cannot fetch it. The Fair value section has a box where you type the figure from morningstar.com; the app then shows it with price / fair value and the margin of safety. It is saved per symbol in your browser only, and it is not used in any score.
 
-The page shows an **app-built fair value estimate** under the quality scorecard. It is **not GuruFocus's GF Value**. GF Value is a proprietary number from GuruFocus's own model, and its only legitimate programmatic source is the GuruFocus API, which is for Premium members and needs an API token. The documentation could not be read from here (the site returned 403), so no GuruFocus integration was built. If you later get a token, a GF Value card can be added next to this one.
+The **Valuation** tab shows an **app-built fair value estimate**. It is **not GuruFocus's GF Value**. GF Value is a proprietary number from GuruFocus's own model, and its only legitimate programmatic source is the GuruFocus API, which is for Premium members and needs an API token. The documentation could not be read from here (the site returned 403), so no GuruFocus integration was built. If you later get a token, a GF Value card can be added next to this one.
 
 The estimate uses three methods, all from the financial statements and the quote (`app/valuation.py`):
 
@@ -562,7 +555,7 @@ The estimate uses three methods, all from the financial statements and the quote
 - **Sensitivity grid.** Fair value at three discount rates (-1, 0, +1 point) and three growth rates (-5, 0, +5 points). The range shown beside the headline is the grid's minimum and maximum.
 - **Reverse DCF.** The page also solves for the stage-1 growth that makes the DCF equal today's price, for example "today's price implies free cash flow growing about 19% a year for 5 years". This needs no growth assumption from the app, so it is the most robust line in the section.
 - **Rating bands** on price / fair value: up to 0.80 undervalued, 0.80 to 0.95 modestly undervalued, 0.95 to 1.15 roughly fair, 1.15 to 1.40 modestly overvalued, above 1.40 overvalued. These cut-offs are the app's own.
-- **Thesis.** Only the extremes add a point: price at or below 0.80 of the DCF value is a bull point and at or above 1.40 is a bear point, both labelled "(app model)". The DCF value also appears in the reference price levels.
+- **Thesis.** Only the extremes add a point: price at or below 0.80 of the DCF value is a bull point and at or above 1.40 is a bear point, both labelled "(app model)". The DCF value also appears in the **reference price levels**, a table under the fair value in the same tab: the analyst mean target, the volume profile's value area and point of control, Graham's buy line, the DCF value and the 52-week high and low, each with its distance from the price. They are reference points from different methods, not forecasts.
 - **Not applicable** to banks, insurers and REITs, and the DCF is skipped (with the reason) when free cash flow is not positive. Nothing is estimated for missing inputs.
 
 Known biases, stated on the page: free cash flow is before stock-based compensation (which flatters software and chip companies), a beta of 1.0 is too high for defensive stocks such as KO (so their DCF is understated), and the 20% growth cap is deliberately conservative for very fast growers. Change `TERMINAL_GROWTH` and `DCF_MAX_GROWTH` in `app/config.py` to test other assumptions.
@@ -571,7 +564,7 @@ Known biases, stated on the page: free cash flow is before stock-based compensat
 
 ## Stock quality scorecard
 
-A **Quality Scorecard** panel near the top shows well-known, published scoring systems side by side. The app uses these instead of its own invented composite score. Each shows its score, the published thresholds, and the inputs behind it, so the reader can check the arithmetic.
+The **Quality Scorecard** panel, at the top of the Fundamentals tab, shows well-known, published scoring systems side by side. The app uses these instead of its own invented composite score. Each shows its score, the published thresholds, and the inputs behind it, so the reader can check the arithmetic. The Buffett five-dimension breakdown and the Graham cigar-butt analysis behind two of the rows are in a box under the table that starts closed.
 
 | Scorecard | Origin | What it measures | Scale and published thresholds |
 |---|---|---|---|
@@ -590,7 +583,7 @@ A **Quality Scorecard** panel near the top shows well-known, published scoring s
 - **Inputs from the same statements.** All of them draw on the financial statements that already passed the reconciliation gate. If the gate fails, no scorecard is shown.
 - **Sector rules.** Banks, insurers and REITs skip Altman, Beneish, the Piotroski items that need working capital, and NCAV. The row shows "not applicable" with the reason. Companies listed under 3 years show scores flagged "limited history".
 - **Missing inputs.** If an input is missing, the score is "n/a" and says which input. It is never estimated.
-- **Sources.** Each row names its source (Longbridge fields used) and the fiscal period, and appears in the Data Source appendix with the formula.
+- **Sources.** Each row names its source (Longbridge fields used) and the fiscal period, and appears in the Data sources table with the formula.
 - **Context.** Piotroski and Magic Formula come from studies of broad US stock samples. The row notes that a score is a screening aid and not a prediction.
 
 ### API
@@ -615,7 +608,7 @@ The scorecard rides on the main `GET /api/analyze` response under `quality`:
 
 ## Two-stage stock filter
 
-The **Two-stage filter** panel (under the quality scorecard) applies the Reset & Invest *Two-Stage Stock Filter* (v2.1, October 2026) to the stock: three mandatory pass/fail checks, then eight questions worth one point each, with 7 of 8 to make the list. The rules are the checklist's own, in [SKILL.md](.agents/skills/two-stage-stock-filter/SKILL.md), unpacked like the Longbridge skills from the `.skill` zip it arrived in (the zip and its [install note](.agents/skills/The-Two-Stage-Stock-Filter_2026-10-21/INSTALL-claude-skill.md) for Claude's own skills setting are still in `.agents/skills/The-Two-Stage-Stock-Filter_2026-10-21/`). The app computes them in [app/twostage.py](app/twostage.py) and [app/pricehist.py](app/pricehist.py) and the page only draws the result.
+The **Two-stage filter** tab applies the Reset & Invest *Two-Stage Stock Filter* (v2.1, October 2026) to the stock: three mandatory pass/fail checks, then eight questions worth one point each, with 7 of 8 to make the list. The rules are the checklist's own, in [SKILL.md](.agents/skills/two-stage-stock-filter/SKILL.md), unpacked like the Longbridge skills from the `.skill` zip it arrived in (the zip and its [install note](.agents/skills/The-Two-Stage-Stock-Filter_2026-10-21/INSTALL-claude-skill.md) for Claude's own skills setting are still in `.agents/skills/The-Two-Stage-Stock-Filter_2026-10-21/`). The app computes them in [app/twostage.py](app/twostage.py) and [app/pricehist.py](app/pricehist.py) and the page only draws the result.
 
 It is a screen, not advice. "Makes the list" means *qualifies for further research under this checklist*. The panel opens with the checklist's own research notice, puts a source, a period and a kind (`REPORTED`, `CALCULATED`, `CONSENSUS ESTIMATE`, `USER INPUT`, `ANALYST JUDGMENT`) beside every figure, and closes with its own "before you trust this" line. Nothing is loosened to let a company through and nothing is estimated: **a figure that cannot be verified is UNKNOWN, with what is missing, and a company the checklist does not fit has the affected tests NOT APPLICABLE and the screen INCOMPLETE.**
 
@@ -783,7 +776,7 @@ The results table has one row per candidate across all symbols: symbol, structur
 
 ### UI
 
-An **Options** section below the institutional-flow panel. It loads after the other panels (the scan makes about 20 CLI calls and takes 10 to 30 seconds on live data), and the **Scan** button re-runs it with the current controls:
+The **Options** tab. It loads after the other panels (the scan makes about 20 CLI calls and takes 10 to 30 seconds on live data), and the **Scan** button re-runs it with the current controls:
 
 - controls: view (Auto / Bullish / Neutral / Bearish), days-to-expiry range, defined risk only, include credit spreads in any IV, minimum credit as a % of width, shares owned (enables covered call and protective put); each row is tagged credit or debit;
 - the **market view** with its full tally;
@@ -994,7 +987,7 @@ Before scoring, the backend checks that the numbers agree with each other (toler
 | Shares × price vs. market cap | ±2% |
 | All statements from the same fiscal period | exact |
 
-If a check fails, the app **does not score**. It shows which figure failed and by how much. A pass shows as a single summary line in the appendix.
+If a check fails, the app **does not score**. It shows which figure failed and by how much. A pass shows as a single summary line in the Data sources box.
 
 **Tuned against real filings (checked on AAPL, MSFT, 700.HK, 9988.HK, JPM).** Applied literally, the roll-forward checks stopped almost every real company, because stock compensation, share-settlement taxes, minority interests, FX translation and restricted cash legitimately move those figures. So:
 
@@ -1101,7 +1094,7 @@ If a metric shows `n/a` when it should have a value, add the CLI's field label t
 python -m pytest -q
 ```
 
-The tests use demo mode and cover the EMA, volume profile, growth rules, flow indicators, news de-duplication, field-mapping layouts, the reconciliation gate (including a failing case), the API endpoints and input validation. `tests/test_cache.py` covers the per-ticker cache: file naming, the freshness boundary, replacing and renaming an old file, merging calls the file lacks, retrying failed calls, unreadable files, an unwritable folder, requests arriving together, and that a cached page equals the live one. It also covers the two lifetimes: market data fetched again after an hour inside a file kept for a week, every data call belonging to exactly one of the two kinds, a stale row replaced and dropped, the time each Data sources row shows, a bar refreshed mid-session being judged by its own fetch, files without per-call times, reading the two settings (including `60*24*7`), and the note the page shows (under Node). `tests/test_avwap.py` covers the anchored VWAP (against hand-computed values and the plain formula), each of the six conclusions reached from price and volume, the decision table including its precedence, the days setting and its limits, and the page controls; `tests/test_sessions.py` covers bar dates and session ends, including summer and winter time. `tests/test_obv.py` covers the OBV read: the framework's rows word for word, every one of the 27 combinations having exactly one row and each reached from price, volume and OBV, the rows that are the app's own being marked, the edges of the three readings, divergence in both directions (and when OBV confirms, falls short by less than the gap, or price makes no new extreme), the chart series, how the read joins the bull case and the critic, and the panel the real `web/app.js` draws (under Node). `tests/test_benchmarks.py` covers the industry comparison: the arithmetic and its edge cases (no positive multiple, outside the industry's range, a rank for a different figure, a thin sample), reading the CLI's answer (including the out-of-range and no-industry replies, taken from real output), the analysis with and without the feed, the cards and the Peer group panel the real `web/app.js` draws, and how the page loads the peers (the request it makes, a response for a stock the user has left, a failed one, and that a search does not wait for them), all run under Node (those tests are skipped when Node is not installed). `tests/test_peers.py` covers the peer group: the figures compared and their edge cases (negative equity, another currency, too few peers, ties), choosing peers (nearest in size, never the company's own other lines, using the real Hong Kong list), the store (freshness boundary, restart, an unreadable or unwritable file, threads), measuring a peer by the same code as the company, gathering with spares, what is and is not kept when a peer fails, reading the CLI's industry list, the statement-call spacing, and the service and `/api/peers` endpoint. `tests/test_twostage.py` covers the Two-Stage filter: the statement lines it reads (and that the existing debt figure is unchanged), the CLI answers it parses (the quarterly summary, splits and reverse splits, short interest in both markets, the adjusted close), every cut-off with its strict or inclusive edge, debt counted both ways and the check going UNKNOWN when leases decide it, ROIC and when it is not meaningful, the PEG bands, the split-adjusted three-month rise (a split in the window, dividends in Longbridge's series, a split the list does not know), the question scores and the totals table including question 4 pending and unknowns, framework fit, the endpoint and its failure modes, and the section the real `web/app.js` draws under Node (escaping, stored inputs becoming the request, the proposal, the concentration flag). `tests/test_pricehist.py` covers month arithmetic, splits, returns and pivots.
+The tests use demo mode and cover the EMA, volume profile, growth rules, flow indicators, news de-duplication, field-mapping layouts, the reconciliation gate (including a failing case), the API endpoints and input validation. `tests/test_cache.py` covers the per-ticker cache: file naming, the freshness boundary, replacing and renaming an old file, merging calls the file lacks, retrying failed calls, unreadable files, an unwritable folder, requests arriving together, and that a cached page equals the live one. It also covers the two lifetimes: market data fetched again after an hour inside a file kept for a week, every data call belonging to exactly one of the two kinds, a stale row replaced and dropped, the time each Data sources row shows, a bar refreshed mid-session being judged by its own fetch, files without per-call times, reading the two settings (including `60*24*7`), and the note the page shows (under Node). `tests/test_avwap.py` covers the anchored VWAP (against hand-computed values and the plain formula), each of the six conclusions reached from price and volume, the decision table including its precedence, the days setting and its limits, and the page controls; `tests/test_sessions.py` covers bar dates and session ends, including summer and winter time. `tests/test_obv.py` covers the OBV read: the framework's rows word for word, every one of the 27 combinations having exactly one row and each reached from price, volume and OBV, the rows that are the app's own being marked, the edges of the three readings, divergence in both directions (and when OBV confirms, falls short by less than the gap, or price makes no new extreme), the chart series, how the read joins the bull case and the critic, and the panel the real `web/app.js` draws (under Node). `tests/test_benchmarks.py` covers the industry comparison: the arithmetic and its edge cases (no positive multiple, outside the industry's range, a rank for a different figure, a thin sample), reading the CLI's answer (including the out-of-range and no-industry replies, taken from real output), the analysis with and without the feed, the cards and the Peer group panel the real `web/app.js` draws, and how the page loads the peers (the request it makes, a response for a stock the user has left, a failed one, and that a search does not wait for them), all run under Node (those tests are skipped when Node is not installed). `tests/test_peers.py` covers the peer group: the figures compared and their edge cases (negative equity, another currency, too few peers, ties), choosing peers (nearest in size, never the company's own other lines, using the real Hong Kong list), the store (freshness boundary, restart, an unreadable or unwritable file, threads), measuring a peer by the same code as the company, gathering with spares, what is and is not kept when a peer fails, reading the CLI's industry list, the statement-call spacing, and the service and `/api/peers` endpoint. `tests/test_twostage.py` covers the Two-Stage filter: the statement lines it reads (and that the existing debt figure is unchanged), the CLI answers it parses (the quarterly summary, splits and reverse splits, short interest in both markets, the adjusted close), every cut-off with its strict or inclusive edge, debt counted both ways and the check going UNKNOWN when leases decide it, ROIC and when it is not meaningful, the PEG bands, the split-adjusted three-month rise (a split in the window, dividends in Longbridge's series, a split the list does not know), the question scores and the totals table including question 4 pending and unknowns, framework fit, the endpoint and its failure modes, and the section the real `web/app.js` draws under Node (escaping, stored inputs becoming the request, the proposal, the concentration flag). `tests/test_pricehist.py` covers month arithmetic, splits, returns and pivots. `tests/test_layout.py` covers the page layout: that every tab has its button and its panel and every section sits in the tab the script names, what a click and the arrow keys do, and what each tab holds (the verdict before the evidence, the price levels under the fair value, the warnings above the tabs, and no blank tab when the reconciliation fails), against the real `web/index.html` and `web/app.js` (the behaviour under Node, with the harnesses `tabs.js` and `panels.js`).
 
 ---
 
@@ -1144,9 +1137,9 @@ OptionScanner/
 │   ├── iv_history.json      # daily ATM IV snapshots, builds the IV percentile over time
 │   ├── peers.json           # the peers' computed figures, kept for 7 days
 │   └── AAPL.US-20261020T143210+0800.json   # one cache file per ticker, kept for DISK_CACHE_MINUTES
-├── tests/                   # test_app.py, test_options.py, test_valuation.py, test_cache.py, test_avwap.py, test_obv.py, test_sessions.py, test_benchmarks.py, test_peers.py, test_fcfe.py, test_twostage.py, test_pricehist.py (+ cards.js, peers_flow.js, obv_card.js, filter_card.js and cache_note.js, the Node harnesses)
+├── tests/                   # test_app.py, test_options.py, test_valuation.py, test_cache.py, test_avwap.py, test_obv.py, test_sessions.py, test_benchmarks.py, test_peers.py, test_fcfe.py, test_twostage.py, test_pricehist.py, test_layout.py (+ cards.js, peers_flow.js, obv_card.js, filter_card.js, cache_note.js, tabs.js and panels.js, the Node harnesses)
 └── web/
-    ├── index.html           # single page: search box, cards, bull/bear columns
+    ├── index.html           # single page: search box, the tab row, one panel for each tab
     ├── app.js
     └── styles.css
 ```

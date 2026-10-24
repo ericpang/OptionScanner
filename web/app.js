@@ -17,19 +17,53 @@ let avwapDays = null;   // the AVWAP anchor chosen on this page; null leaves it 
 let forcePeers = false; // set by "Refresh data": the next peer comparison measures the peers again instead of reusing them
 let chartSeq = 0;       // numbers chart requests, so a slow one that was superseded cannot overwrite a newer one
 
+// The page is a row of tabs, one for each group of related analyses; web/index.html holds the buttons (#tabbtn-NAME) and the panels
+// (#tab-NAME), in this order. SECTION_TAB says which panel each section sits in. The header, the reconciliation failure and the data
+// sources are in none: they are always on the page.
+const TABS = ["overview", "fundamentals", "valuation", "filter", "price", "options", "news"];
+const SECTION_TAB = { thesis: "overview", quality: "fundamentals", metrics: "fundamentals", peers: "fundamentals", valuation: "valuation", filter: "filter",
+  chartsec: "price", flows: "price", options: "options", news: "news" };
+let activeTab = TABS[0];   // kept from one search to the next, so two stocks can be compared on the same tab
+
 // A cached or older index.html may lack a section this script renders into. Create it rather than failing,
 // so one missing element can never make a panel (or the whole run) disappear.
 function ensureSections() {
-  const order = ["header", "recon", "quality", "filter", "valuation", "thesis", "metrics", "peers", "chartsec", "flows", "options", "news", "sources"];
-  order.forEach((id, i) => {
+  ["header", "recon", ...Object.keys(SECTION_TAB), "sources"].forEach((id) => {
     if ($(id)) return;
     const s = document.createElement("section");
     s.id = id;
-    const next = order.slice(i + 1).map($).find(Boolean) || document.querySelector("footer");
-    next.parentNode.insertBefore(s, next);
+    const tab = SECTION_TAB[id];   // none for the sections that are always on the page
+    ((tab && ($("tab-" + tab) || $("panels"))) || document.querySelector("main")).appendChild(s);
   });
   if (!$("mode")) { const m = document.createElement("div"); m.id = "mode"; $("status").after(m); }
-  if (!$("cachenote")) { const m = document.createElement("div"); m.id = "cachenote"; $("mode").after(m); }
+  if (!$("warnings")) { const m = document.createElement("div"); m.id = "warnings"; $("mode").after(m); }
+  if (!$("cachenote")) { const m = document.createElement("div"); m.id = "cachenote"; $("warnings").after(m); }
+}
+
+// Show one tab and hide the others. A stale page without the tab row has nothing to switch, and every section simply shows.
+function showTab(name, byUser = false) {
+  if (!TABS.includes(name)) return;
+  activeTab = name;
+  TABS.forEach((t) => {
+    const btn = $("tabbtn-" + t), panel = $("tab-" + t), on = t === name;
+    if (btn) { btn.setAttribute("aria-selected", String(on)); btn.tabIndex = on ? 0 : -1; }
+    if (panel) panel.hidden = !on;
+  });
+  if (byUser) {   // a new tab starts at its own top, under the sticky header, rather than wherever the last one was scrolled to
+    const top = $("panels").getBoundingClientRect().top + window.scrollY - $("tabs").parentNode.offsetHeight;
+    if (window.scrollY > top) window.scrollTo(0, Math.max(0, top));
+  }
+  // Plotly sizes a chart it draws in a hidden panel to a default, and only measures again on a resize: this makes the ones now showing do it.
+  window.dispatchEvent(new Event("resize"));
+}
+
+// Left and Right move along the tabs, Home and End go to the first and the last (the keys a tab list is expected to answer to).
+function tabKey(e) {
+  const i = TABS.indexOf(activeTab), to = { ArrowRight: i + 1, ArrowLeft: i - 1, Home: 0, End: TABS.length - 1 }[e.key];
+  if (to === undefined) return;
+  e.preventDefault();
+  showTab(TABS[(to + TABS.length) % TABS.length], true);
+  $("tabbtn-" + activeTab).focus();
 }
 
 async function api(path) {
@@ -67,6 +101,11 @@ document.addEventListener("DOMContentLoaded", () => {
   $("filter").addEventListener("click", filterClick);
   $("refresh").addEventListener("click", refreshData);
   $("cachenote").addEventListener("click", (e) => { if (e.target.closest("#refresh2")) refreshData(); });
+  const bar = $("tabs");
+  if (bar) {
+    bar.addEventListener("click", (e) => { const b = e.target.closest("[data-tab]"); if (b) showTab(b.dataset.tab, true); });
+    bar.addEventListener("keydown", tabKey);
+  }
   $("ranges").addEventListener("click", (e) => {
     const b = e.target.closest("button");
     if (!b || !current.symbol) return;
@@ -104,8 +143,9 @@ async function run(raw) {
   if (!symbol) return;
   $("refresh").disabled = false;
   ensureSections();
-  ["header", "recon", "quality", "filter", "valuation", "thesis", "metrics", "peers", "flows", "options", "news", "sources", "mode", "cachenote"].forEach((i) => ($(i).innerHTML = ""));
+  ["header", "recon", "quality", "filter", "valuation", "thesis", "metrics", "peers", "flows", "options", "news", "sources", "mode", "warnings", "cachenote"].forEach((i) => ($(i).innerHTML = ""));
   $("chartsec").hidden = true;
+  if ($("tabs")) $("tabs").hidden = false;   // the row appears with the first search; the tab the last search was left on stays showing
   setStatus(`Analyzing ${symbol}...`);
   current = { symbol, range: "1y", chart: null, flows: null, cache: null, filing: null, analysis: null, peers: null, filter: null };
   [...$("ranges").children].forEach((x) => x.classList.toggle("on", x.dataset.r === "1y"));
@@ -178,12 +218,19 @@ function renderAnalysis(a) {
   $("recon").innerHTML = rec.status === "fail"
     ? `<div class="card" style="margin-top:14px;border-color:var(--bad)"><h3>Reconciliation failed: no scores shown</h3><p>${esc(a.message)}</p>${reconTable(rec)}</div>`
     : "";
-  if (a.halted) { return renderSources(a, true); }
+  if (a.halted) { notScored(); return renderSources(a, true); }
   renderQuality(a.quality);
-  renderValuation(a.valuation, a.snapshot);
+  renderValuation(a.valuation, a.snapshot, a.levels);
   renderThesis(a);
   renderMetrics(a.metrics, a.snapshot, a.benchmarks, current.peers);
   renderSources(a);
+}
+
+// A company whose statements fail the reconciliation checks is not scored. Say so in every tab that would have held scores, so
+// none of them is left blank, not only in the notice above the tabs.
+function notScored() {
+  const note = `<div class="card"><p class="note">Not shown: this company's statements failed the reconciliation checks (see the notice above), so the app does not score it.</p></div>`;
+  ["thesis", "quality", "valuation", "filter"].forEach((id) => ($(id).innerHTML = note));
 }
 
 function reconTable(rec) {
@@ -212,11 +259,12 @@ function renderQuality(q) {
   ${row("Buffett moat", `<span class="stars">${stars(bf.stars.moat)}</span> moat`, "app rubric: moat and financials 4+ stars", st("Buffett"), bf.note)}
   ${row("ROIC vs WACC", na(w.spread) ? "n/a" : `${w.spread > 1 ? ">100%" : pct(w.spread)} spread (WACC ${pct(w.wacc)})`, "positive = creates value", st("ROIC vs WACC"), w.note)}
   </table><div class="note">${esc(q.pass_rules)} A score is a screening aid, not a prediction.</div></div>
-  <div class="two" style="margin-top:12px">
+  <details class="more" style="margin-top:12px"><summary>Buffett's five dimensions and the Graham cigar-butt analysis, in detail</summary>
+  <div class="two">
    <div class="card"><h3>Buffett five dimensions <span class="tag">${esc(bf.tag)}</span></h3>
     ${["moat", "financials", "management", "valuation", "visibility"].map((k) => `<div><b>${k}</b> <span class="stars">${stars(bf.stars[k])}</span><ul class="plain">${(bf.evidence[k] || []).map((e) => `<li>${esc(e)}</li>`).join("")}</ul></div>`).join("")}
     <div class="note">Suggested minimum holding period: ${esc(bf.holding_period)}. This framework is not the right lens for a horizon under 3 years.</div></div>
-   <div class="card"><h3>Graham cigar-butt analysis</h3>${graham(g)}</div></div>`;
+   <div class="card"><h3>Graham cigar-butt analysis</h3>${graham(g)}</div></div></details>`;
 }
 
 // Morningstar's Fair Value Estimate is proprietary and has no public API, so it is typed in from morningstar.com and
@@ -241,9 +289,19 @@ function renderMorningstar(snap) {
   if (clr) clr.addEventListener("click", () => { msSet(sym, null); $("msfve").remove(); renderMorningstar(snap); });
 }
 
-function renderValuation(v, snap) {
+function renderValuation(v, snap, levels) {
   renderValuationModel(v, snap);
+  renderLevels(levels, snap);
   renderMorningstar(snap);
+}
+
+// Every price the analysis points to, on one ladder against the current price: the analyst target, the volume profile's value area,
+// Graham's buy line, the DCF value and the 52-week range. They come from different methods, so they sit beside the fair value models.
+function renderLevels(levels, snap) {
+  if (!levels || !levels.length || !snap) return;
+  $("valuation").insertAdjacentHTML("beforeend", `<div class="card" style="margin-top:12px"><h3>Reference price levels</h3>
+    <table>${levels.map((l) => `<tr><td>${esc(l.label)}</td><td>${fx(l.price)}</td><td>${pct(l.price / snap.price - 1)} vs price</td></tr>`).join("")}</table>
+    <div class="note">Levels are reference points from analyst targets, the volume profile, Graham, the DCF and the 52-week range. They are not forecasts.</div></div>`);
 }
 
 function renderValuationModel(v, snap) {
@@ -321,16 +379,13 @@ function renderFilingText(got) {
 function renderThesis(a) {
   const pts = (arr, none) => arr.length ? arr.map((p) => `<div class="pt"><b>${esc(p.title)}</b><span>${esc(p.evidence)} <em>[${esc(p.source)}]</em></span></div>`).join("") : `<p class="note">${none}</p>`;
   $("thesis").innerHTML = `<h2>Bull and bear case</h2>
-  <div class="two">
+  <div class="card"><h3>Verdict: <span class="tag warn">${esc(a.verdict.tag)}</span></h3>
+   <p>${esc(a.verdict.summary)}</p>
+   ${a.narrative ? `<p class="narr">${esc(a.narrative)}</p>` : ""}</div>
+  <div class="two" style="margin-top:12px">
    <div class="card col bull"><h3 class="b">Bull case (${a.bull.length})</h3>${pts(a.bull, "No supporting points met the rules.")}</div>
    ${renderBear(a.risks, "No cautionary points met the rules.")}</div>
-  ${renderNotMeasured(a.risks)}
-  <div class="card" style="margin-top:12px"><h3>Verdict: <span class="tag warn">${esc(a.verdict.tag)}</span></h3>
-   <p>${esc(a.verdict.summary)}</p>
-   ${a.narrative ? `<p class="narr">${esc(a.narrative)}</p>` : ""}
-   <h3>Reference price levels</h3>
-   <table>${a.levels.map((l) => `<tr><td>${esc(l.label)}</td><td>${fx(l.price)}</td><td>${pct(l.price / a.snapshot.price - 1)} vs price</td></tr>`).join("")}</table>
-   <div class="note">Levels are reference points from analyst targets, the volume profile, Graham and the 52-week range. They are not forecasts.</div></div>`;
+  ${renderNotMeasured(a.risks)}`;
   renderFilingText();
 }
 
@@ -865,15 +920,9 @@ function renderFlows(f) {
     <tr><td>Chaikin Money Flow (20)</td><td>${fx(fl.cmf_20)}</td></tr>
     <tr><td>Up/down volume ratio 20d / 50d</td><td>${fx(fl.updown_volume_20d)} / ${fx(fl.updown_volume_50d)}</td></tr>
     <tr><td>High-volume days (60d)</td><td>${fl.high_volume_days.length} (${fl.high_volume_days.filter((h) => h.type === "accumulation").length} accumulation, ${fl.high_volume_days.filter((h) => h.type === "distribution").length} distribution)</td></tr></table>
-    <div id="obvchart" style="height:170px"></div>
     <p class="note"><b>Accumulation signals (${n.positive}):</b> ${esc(n.signals_for.join("; ") || "none")}<br><b>Distribution signals (${n.negative}):</b> ${esc(n.signals_against.join("; ") || "none")}<br><b>Neutral:</b> ${esc((n.signals_neutral || []).join("; ") || "none")}<br><b>Missing:</b> ${esc(n.signals_missing.join("; ") || "none")}</p>
     <div class="note">The label needs at least 3 signals one way and more than the other way. The holder data is quarterly and up to ~45 days old; the price and volume signals are current, so the label can disagree with the holder table.</div>
-    <div class="note">"Large orders" is a size-based proxy; Longbridge data does not identify who is trading. OBV and CMF infer buying pressure from price and volume.</div></div></div>`;
-  if (window.Plotly) {
-    Plotly.newPlot("obvchart", [{ type: "scatter", mode: "lines", x: fl.dates, y: fl.obv, name: "OBV", line: { color: css("--accent"), width: 1.5 } }],
-      { margin: { l: 40, r: 6, t: 4, b: 20 }, paper_bgcolor: "rgba(0,0,0,0)", plot_bgcolor: "rgba(0,0,0,0)", font: { color: css("--muted"), size: 10 }, xaxis: { gridcolor: css("--line") }, yaxis: { gridcolor: css("--line") }, showlegend: false },
-      { displayModeBar: false, responsive: true });
-  }
+    <div class="note">"Large orders" is a size-based proxy; Longbridge data does not identify who is trading. OBV and CMF infer buying pressure from price and volume. OBV is drawn in its own pane of the price chart above.</div></div></div>`;
 }
 
 // ---------------------------------------------------------------- news
@@ -905,10 +954,12 @@ function renderNews(n, limit) {
   });
 }
 
+// The warnings go above the tabs, where they are seen whichever tab is open. The sources table and the reconciliation checks are
+// reference detail, so they sit in a box at the bottom of the page that starts closed.
 function renderSources(a, haltedOnly = false) {
-  const warn = a.warnings && a.warnings.length ? `<div class="banner">Some data could not be fetched: ${a.warnings.map(esc).join("; ")}</div>` : "";
+  $("warnings").innerHTML = a.warnings && a.warnings.length ? `<div class="banner">Some data could not be fetched: ${a.warnings.map(esc).join("; ")}</div>` : "";
   const rows = (a.sources || []).map((s) => `<tr><td>${esc(s.field)}</td><td>${esc(s.formula)}</td><td>${esc(s.source)}</td><td>${esc(s.period)}</td><td>${esc(s.fetched_at)}</td></tr>`).join("");
-  $("sources").innerHTML = `${warn}<h2>Data sources</h2><div class="card">${rows ? `<table><tr><th>Field</th><th>Definition</th><th>Source</th><th>Period</th><th>Fetched</th></tr>${rows}</table>` : ""}
+  $("sources").innerHTML = `<div class="card">${rows ? `<table><tr><th>Field</th><th>Definition</th><th>Source</th><th>Period</th><th>Fetched</th></tr>${rows}</table>` : ""}
    <p class="note"><b>Reconciliation:</b> ${esc(a.reconciliation.summary)}</p>${haltedOnly ? "" : reconTable(a.reconciliation)}</div>`;
 }
 
@@ -974,8 +1025,8 @@ function renderOptions() {
   <div class="two"><div class="card"><h3>Market view: <span class="tag ${vTag}">${esc(v.value)}</span> ${v.mode === "override" ? `<span class="note">(override; auto says ${esc(v.auto_value)})</span>` : ""}</h3>
     <p class="note">Automatic score ${v.score > 0 ? "+" : ""}${v.score}. ${esc(v.rule)}.</p><ul class="plain">${tally}</ul></div>
    <div class="grid" style="grid-template-columns:repeat(2,1fr)">${cards.join("")}</div></div>
-  <div class="two" style="margin-top:12px"><div class="card"><h3>Term structure (ATM IV by expiry)</h3><div id="o_term" style="height:200px"></div></div>
-   <div class="card"><h3>Skew: IV by strike, ${esc(iv.focus_expiry || "")}</h3><div id="o_skew" style="height:200px"></div></div></div>
+  <div class="two" style="margin-top:12px"><div class="card plotcard"><h3>Term structure (ATM IV by expiry)</h3><div id="o_term" style="height:200px"></div></div>
+   <div class="card plotcard"><h3>Skew: IV by strike, ${esc(iv.focus_expiry || "")}</h3><div id="o_skew" style="height:200px"></div></div></div>
   <div class="card" style="margin-top:12px"><h3>Put/call volume ratio, daily</h3><div id="o_pc" style="height:150px"></div></div>
   <div class="card" style="margin-top:12px"><h3>Candidate trades (${o.candidates.length}) ${o.defined_risk_only ? '<span class="tag">defined risk only</span>' : '<span class="tag bad">undefined risk allowed</span>'}</h3>
     <div style="overflow-x:auto" id="o_table"></div>
@@ -1035,7 +1086,7 @@ function renderOptionDetail(c) {
     <p class="note">Net ${c.net.type}: $${fx(c.net.per_share)} per share ($${fx(c.net.dollars)} per set). Expected move to expiry about &plusmn;$${fx(c.expected_move)}${c.short_strikes_outside_expected_move === null ? "" : c.short_strikes_outside_expected_move ? "; short strikes are outside it" : "; a short strike is inside it"}.
     Net Greeks (model): delta ${fx(c.greeks.delta, 1)} shares, gamma ${fx(c.greeks.gamma, 3)}, theta ${fx(c.greeks.theta, 2)} $/day, vega ${fx(c.greeks.vega, 2)} $ per IV point.${c.credit_pct_width !== null && c.credit_pct_width !== undefined ? ` Credit is ${(c.credit_pct_width * 100).toFixed(0)}% of the widest wing.` : ""}</p>
     <ul class="plain">${c.flags.map((f) => `<li>${esc(f)}</li>`).join("")}</ul></div>
-   <div class="card"><h3>Payoff</h3><div id="o_payoff" style="height:300px"></div></div></div>`;
+   <div class="card plotcard"><h3>Payoff</h3><div id="o_payoff" style="height:300px"></div></div></div>`;
   const p = c.payoff;
   if (window.Plotly && p) {
     const ink = css("--ink"), muted = css("--muted"), line = css("--line");

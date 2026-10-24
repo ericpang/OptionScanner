@@ -17,38 +17,72 @@
       <button type="button" id="refresh" title="Discard this ticker's cached data and fetch it live again" disabled>Refresh data</button>
     </form>
   </div>
+  <!-- One tab for each group of related analyses. The order here is the order of TABS in app.js. -->
+  <div class="wrap tabs" id="tabs" role="tablist" aria-label="Analysis" hidden>
+    <button type="button" role="tab" id="tabbtn-overview" data-tab="overview" aria-controls="tab-overview" aria-selected="true">Overview</button>
+    <button type="button" role="tab" id="tabbtn-fundamentals" data-tab="fundamentals" aria-controls="tab-fundamentals" aria-selected="false" tabindex="-1">Fundamentals</button>
+    <button type="button" role="tab" id="tabbtn-valuation" data-tab="valuation" aria-controls="tab-valuation" aria-selected="false" tabindex="-1">Valuation</button>
+    <button type="button" role="tab" id="tabbtn-filter" data-tab="filter" aria-controls="tab-filter" aria-selected="false" tabindex="-1">Two-stage filter</button>
+    <button type="button" role="tab" id="tabbtn-price" data-tab="price" aria-controls="tab-price" aria-selected="false" tabindex="-1">Price &amp; flows</button>
+    <button type="button" role="tab" id="tabbtn-options" data-tab="options" aria-controls="tab-options" aria-selected="false" tabindex="-1">Options</button>
+    <button type="button" role="tab" id="tabbtn-news" data-tab="news" aria-controls="tab-news" aria-selected="false" tabindex="-1">News</button>
+  </div>
 </header>
 <main class="wrap">
   <div id="status" class="status">Enter a symbol in CODE.MARKET format (US, HK, SH, SZ, SG).</div>
   <div id="mode"></div>
+  <div id="warnings"></div>
   <div id="cachenote"></div>
   <section id="header"></section>
   <section id="recon"></section>
-  <section id="quality"></section>
-  <section id="filter"></section>
-  <section id="valuation"></section>
-  <section id="thesis"></section>
-  <section id="metrics"></section>
-  <section id="peers"></section>
-  <section id="chartsec" hidden>
-    <h2>Price chart</h2>
-    <div class="chartbar">
-      <div class="ranges" id="ranges">
-        <button data-r="6m">6M</button><button data-r="1y" class="on">1Y</button>
-        <button data-r="2y">2Y</button><button data-r="5y">5Y</button>
-      </div>
-      <label class="avwapctl" title="The anchored VWAP starts this many trading days before the latest closed session">AVWAP anchored
-        <input id="avwapdays" type="number" min="5" max="500" step="1" value="20" aria-label="AVWAP anchor, in trading days back"> trading days back</label>
+  <div id="panels">
+    <!-- The answer first: the verdict and the bull and bear case that every other tab feeds. -->
+    <div class="tabpanel" id="tab-overview" role="tabpanel" aria-labelledby="tabbtn-overview">
+      <section id="thesis"></section>
     </div>
-    <div id="chart" class="chart"></div>
-    <div id="chartsig" class="note"></div>
-    <div id="avwapinsight"></div>
-    <div id="obvinsight"></div>
-  </section>
-  <section id="flows"></section>
-  <section id="options"></section>
-  <section id="news"></section>
-  <section id="sources"></section>
+    <!-- What the company's statements say: the scorecards, the metrics (with the peer comparison under them). -->
+    <div class="tabpanel" id="tab-fundamentals" role="tabpanel" aria-labelledby="tabbtn-fundamentals" hidden>
+      <section id="quality"></section>
+      <section id="metrics"></section>
+      <section id="peers"></section>
+    </div>
+    <!-- What it is worth against the price: the fair value models and every reference price level. -->
+    <div class="tabpanel" id="tab-valuation" role="tabpanel" aria-labelledby="tabbtn-valuation" hidden>
+      <section id="valuation"></section>
+    </div>
+    <div class="tabpanel" id="tab-filter" role="tabpanel" aria-labelledby="tabbtn-filter" hidden>
+      <section id="filter"></section>
+    </div>
+    <!-- What the price and the volume say, and who is buying and selling. -->
+    <div class="tabpanel" id="tab-price" role="tabpanel" aria-labelledby="tabbtn-price" hidden>
+      <section id="chartsec" hidden>
+        <h2>Price chart</h2>
+        <div class="chartbar">
+          <div class="ranges" id="ranges">
+            <button data-r="6m">6M</button><button data-r="1y" class="on">1Y</button>
+            <button data-r="2y">2Y</button><button data-r="5y">5Y</button>
+          </div>
+          <label class="avwapctl" title="The anchored VWAP starts this many trading days before the latest closed session">AVWAP anchored
+            <input id="avwapdays" type="number" min="5" max="500" step="1" value="20" aria-label="AVWAP anchor, in trading days back"> trading days back</label>
+        </div>
+        <div id="chart" class="chart"></div>
+        <div id="chartsig" class="note"></div>
+        <div id="avwapinsight"></div>
+        <div id="obvinsight"></div>
+      </section>
+      <section id="flows"></section>
+    </div>
+    <div class="tabpanel" id="tab-options" role="tabpanel" aria-labelledby="tabbtn-options" hidden>
+      <section id="options"></section>
+    </div>
+    <div class="tabpanel" id="tab-news" role="tabpanel" aria-labelledby="tabbtn-news" hidden>
+      <section id="news"></section>
+    </div>
+  </div>
+  <details class="srcbox">
+    <summary>Data sources and reconciliation</summary>
+    <section id="sources"></section>
+  </details>
   <footer class="disc">For reference only. Not investment advice. Make investment decisions independently, based on your own risk tolerance. <span class="build">UI build __BUILD__</span></footer>
 </main>
 <script src="/static/app.js"></script>
